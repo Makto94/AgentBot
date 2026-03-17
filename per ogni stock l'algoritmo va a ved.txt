@@ -1,0 +1,3 @@
+per ogni stock l'algoritmo va a vedere se la candela dell'ultima candela ha il close level più alto o più basso dell'high o del low della candela precedente, quindi sull'orario o sulle 4 ore
+
+le api prenderle da Yahoo finance

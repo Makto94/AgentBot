@@ -1,0 +1,10 @@
+services:
+  bot-alarm:
+    build: .
+    container_name: bot-alarm
+    restart: always
+    volumes:
+      - ./alerts.log:/app/alerts.log
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Europe/Rome
