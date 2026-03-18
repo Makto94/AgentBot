@@ -1,10 +1,73 @@
 services:
-  bot-alarm:
-    build: .
-    container_name: bot-alarm
+  db:
+    image: postgres:16-alpine
+    container_name: stock_scanner_db
     restart: always
-    volumes:
-      - ./alerts.log:/app/alerts.log
     environment:
-      - PYTHONUNBUFFERED=1
-      - TZ=Europe/Rome
+      POSTGRES_DB: ${POSTGRES_DB:-stock_scanner}
+      POSTGRES_USER: ${POSTGRES_USER:-scanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scanner_password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - scanner-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scanner} -d ${POSTGRES_DB:-stock_scanner}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    container_name: stock_scanner_bot
+    restart: always
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: Europe/Rome
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - scanner-network
+
+  web-backend:
+    build: ./web/backend
+    container_name: stock_scanner_backend
+    restart: always
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - scanner-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  web-frontend:
+    build: ./web/frontend
+    container_name: stock_scanner_frontend
+    restart: always
+    ports:
+      - "7071:80"
+    networks:
+      - scanner-network
+      - nginx-proxy-manager_default
+    depends_on:
+      - web-backend
+
+volumes:
+  pgdata:
+
+networks:
+  scanner-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+  nginx-proxy-manager_default:
+    external: true

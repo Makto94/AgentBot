@@ -1,25 +1,35 @@
+"""Environment-based configuration."""
+
+import os
+
 from stocks import get_all_stocks
 
+# ── Stock list ────────────────────────────────────────────────────────
 STOCKS = get_all_stocks()
-
 TIMEFRAMES = ["1h", "4h"]
 
-# ── Scheduling ──────────────────────────────────────────────────────────
-# Intervallo tra una scansione completa e l'altra (in minuti).
-# 30 min = cattura ogni chiusura di candela 1h con margine.
-SCAN_INTERVAL_MINUTES = 30
+# ── Database ──────────────────────────────────────────────────────────
+POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "stock_scanner_db")
+POSTGRES_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
+POSTGRES_DB = os.environ.get("POSTGRES_DB", "stock_scanner")
+POSTGRES_USER = os.environ.get("POSTGRES_USER", "scanner")
+POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "scanner_password")
 
-# ── Rate limiting ───────────────────────────────────────────────────────
-BATCH_SIZE = 20
-BATCH_DELAY = 2  # secondi tra un batch e l'altro
+# ── Telegram ──────────────────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# ── Dedup alert ─────────────────────────────────────────────────────────
-# Ogni alert è univoco per (ticker, timeframe, timestamp candela).
-# Scade dopo N ore, così non si accumula memoria all'infinito.
-ALERT_EXPIRY_HOURS = 8
+# ── Scheduling ────────────────────────────────────────────────────────
+SCAN_INTERVAL_MINUTES = int(os.environ.get("SCAN_INTERVAL_MINUTES", "30"))
 
-# ── Logging ─────────────────────────────────────────────────────────────
-LOG_FILE = "alerts.log"
+# ── Rate limiting ─────────────────────────────────────────────────────
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "50"))
+BATCH_DELAY = int(os.environ.get("BATCH_DELAY", "1"))
 
-# ── Email (da implementare) ─────────────────────────────────────────────
-EMAIL_TO = "tua_email@example.com"
+# ── S/R Filter ────────────────────────────────────────────────────────
+SR_PERIOD = int(os.environ.get("SR_PERIOD", "7"))
+SR_TOLERANCE = float(os.environ.get("SR_TOLERANCE", "0.25"))
+PCT_THRESHOLD = float(os.environ.get("PCT_THRESHOLD", "0.01"))
+
+# ── Logging ───────────────────────────────────────────────────────────
+LOG_FILE = os.environ.get("LOG_FILE", "/tmp/alerts.log")

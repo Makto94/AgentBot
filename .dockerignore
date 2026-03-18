@@ -1,0 +1,8 @@
+.env
+.env.example
+.git
+__pycache__
+*.pyc
+web/
+docker-compose.yml
+alerts.log

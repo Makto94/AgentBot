@@ -115,11 +115,82 @@ ITALY_STOCKS = [
 ]
 
 
+def get_russell2000() -> list[str]:
+    """Scarica la lista Russell 2000 (iShares IWM top holdings) da Wikipedia."""
+    try:
+        html = _fetch_html("https://en.wikipedia.org/wiki/Russell_2000_Index")
+        tables = pd.read_html(StringIO(html))
+        for table in tables:
+            for col in ("Ticker", "Symbol"):
+                if col in table.columns:
+                    tickers = table[col].dropna().str.replace(".", "-", regex=False).tolist()
+                    logger.info(f"Russell 2000: {len(tickers)} ticker caricati")
+                    return tickers
+        logger.warning("Russell 2000: tabella non trovata")
+        return []
+    except Exception as e:
+        logger.error(f"Errore fetch Russell 2000: {e}")
+        return []
+
+
+# ── Borsa Europea ────────────────────────────────────────────────────
+# DAX 40 (Germania, suffisso .DE)
+# CAC 40 (Francia, suffisso .PA)
+# FTSE 100 (UK, suffisso .L)
+# IBEX 35 (Spagna, suffisso .MC)
+# AEX 25 (Olanda, suffisso .AS)
+
+EUROPE_STOCKS = [
+    # ── DAX 40 ──
+    "ADS.DE", "AIR.DE", "ALV.DE", "BAS.DE", "BAYN.DE",
+    "BEI.DE", "BMW.DE", "CON.DE", "1COV.DE", "DTG.DE",
+    "DBK.DE", "DB1.DE", "DHL.DE", "DTE.DE", "EOAN.DE",
+    "FRE.DE", "HEI.DE", "HEN3.DE", "IFX.DE", "MBG.DE",
+    "MRK.DE", "MTX.DE", "MUV2.DE", "P911.DE", "PAH3.DE",
+    "RHM.DE", "RWE.DE", "SAP.DE", "SHL.DE", "SIE.DE",
+    "SY1.DE", "VNA.DE", "VOW3.DE", "ZAL.DE",
+    # ── CAC 40 ──
+    "AI.PA", "AIR.PA", "ALO.PA", "CS.PA", "BNP.PA",
+    "EN.PA", "CAP.PA", "CA.PA", "ACA.PA", "BN.PA",
+    "DSY.PA", "ENGI.PA", "EL.PA", "ERF.PA", "RMS.PA",
+    "KER.PA", "LR.PA", "OR.PA", "MC.PA", "ML.PA",
+    "ORA.PA", "RI.PA", "PUB.PA", "RNO.PA", "SAF.PA",
+    "SGO.PA", "SAN.PA", "SU.PA", "GLE.PA", "STLAP.PA",
+    "STM.PA", "TEP.PA", "TTE.PA", "URW.PA", "VIE.PA",
+    "DG.PA", "VIV.PA", "WLN.PA",
+    # ── FTSE 100 (top 50) ──
+    "AAL.L", "ABF.L", "AHT.L", "ANTO.L", "AZN.L",
+    "BA.L", "BARC.L", "BATS.L", "BDEV.L", "BKG.L",
+    "BP.L", "BRBY.L", "BT-A.L", "CPG.L", "CRH.L",
+    "DGE.L", "ENT.L", "EXPN.L", "FRES.L", "GLEN.L",
+    "GSK.L", "HIK.L", "HLMA.L", "HSBA.L", "IAG.L",
+    "IHG.L", "III.L", "IMB.L", "INF.L", "JD.L",
+    "KGF.L", "LAND.L", "LGEN.L", "LLOY.L", "LSEG.L",
+    "MNG.L", "NG.L", "NWG.L", "PSON.L", "REL.L",
+    "RIO.L", "RKT.L", "RR.L", "SBRY.L", "SDR.L",
+    "SGE.L", "SHEL.L", "SMDS.L", "SMT.L", "SN.L",
+    # ── IBEX 35 ──
+    "ACS.MC", "ACX.MC", "AENA.MC", "AMS.MC", "ANA.MC",
+    "BBVA.MC", "BKT.MC", "CABK.MC", "CLNX.MC", "ELE.MC",
+    "ENG.MC", "FDR.MC", "FER.MC", "GRF.MC", "IAG.MC",
+    "IBE.MC", "IDR.MC", "ITX.MC", "LOG.MC", "MAP.MC",
+    "MEL.MC", "MRL.MC", "MTS.MC", "NTGY.MC", "RED.MC",
+    "REP.MC", "SAB.MC", "SAN.MC", "SCYR.MC", "SLR.MC",
+    "TEF.MC", "UNI.MC",
+    # ── AEX 25 ──
+    "ABN.AS", "ADYEN.AS", "AGN.AS", "AH.AS", "AKZA.AS",
+    "ASM.AS", "ASML.AS", "DSM.AS", "HEIA.AS", "INGA.AS",
+    "KPN.AS", "NN.AS", "PHIA.AS", "PRX.AS", "RAND.AS",
+    "REN.AS", "SHELL.AS", "UNA.AS", "URW.AS", "WKL.AS",
+]
+
+
 def get_all_us_stocks() -> list[str]:
-    """Restituisce tutti i ticker USA (S&P 500 + NASDAQ-100, senza duplicati)."""
+    """Restituisce tutti i ticker USA (S&P 500 + NASDAQ-100 + Russell 2000, senza duplicati)."""
     sp500 = get_sp500()
     nasdaq = get_nasdaq100()
-    combined = list(dict.fromkeys(sp500 + nasdaq))
+    russell = get_russell2000()
+    combined = list(dict.fromkeys(sp500 + nasdaq + russell))
     logger.info(f"Totale USA (senza duplicati): {len(combined)} ticker")
     return combined
 
@@ -130,10 +201,20 @@ def get_all_italy_stocks() -> list[str]:
     return ITALY_STOCKS
 
 
+def get_all_europe_stocks() -> list[str]:
+    """Restituisce tutti i ticker europei (DE, PA, L, MC, AS)."""
+    logger.info(f"Totale Europa (ex Italia): {len(EUROPE_STOCKS)} ticker")
+    return EUROPE_STOCKS
+
+
 def get_all_stocks() -> list[str]:
-    """Restituisce tutti i ticker USA + Italia."""
+    """Restituisce tutti i ticker USA + Italia + Europa."""
     us = get_all_us_stocks()
     ita = get_all_italy_stocks()
-    all_stocks = us + ita
-    logger.info(f"Totale complessivo: {len(all_stocks)} ticker ({len(us)} USA + {len(ita)} ITA)")
+    eu = get_all_europe_stocks()
+    all_stocks = list(dict.fromkeys(us + ita + eu))
+    logger.info(
+        f"Totale complessivo: {len(all_stocks)} ticker "
+        f"({len(us)} USA + {len(ita)} ITA + {len(eu)} EU)"
+    )
     return all_stocks
