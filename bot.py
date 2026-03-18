@@ -106,6 +106,27 @@ def download_batch(tickers: list[str]) -> dict[str, pd.DataFrame]:
     return result
 
 
+def _check_breakout(df: pd.DataFrame) -> tuple[str | None, float]:
+    """Check last candle for breakout. Returns (signal_type, breakout_pct)."""
+    if df is None or len(df) < 2:
+        return None, 0.0
+
+    prev_high = float(df.iloc[-2]["High"])
+    prev_low = float(df.iloc[-2]["Low"])
+    last_close = float(df.iloc[-1]["Close"])
+
+    if last_close > prev_high:
+        pct = (last_close - prev_high) / prev_high
+        if pct >= PCT_THRESHOLD:
+            return "RIALZISTA", pct
+    elif last_close < prev_low:
+        pct = (prev_low - last_close) / prev_low
+        if pct >= PCT_THRESHOLD:
+            return "RIBASSISTA", pct
+
+    return None, 0.0
+
+
 def process_ticker(
     ticker: str,
     df_raw: pd.DataFrame,
@@ -113,7 +134,7 @@ def process_ticker(
     sr_levels_cache: dict[str, list[float]],
     atr_cache: dict[str, float],
 ) -> tuple[int, int, int]:
-    """Process a single ticker's raw 1h data. Returns (alerts, filtered, errors)."""
+    """Process a single ticker. Only saves signal if 4h+1h confirm same direction."""
     alerts = 0
     filtered = 0
     errors = 0
@@ -134,13 +155,11 @@ def process_ticker(
         "4h": df_4h if not df_4h.empty else None,
     }
 
-    for tf in TIMEFRAMES:
-        df = candles_map.get(tf)
+    # Save candles to DB for both timeframes
+    for tf, df in candles_map.items():
         if df is None or len(df) < 2:
             continue
-
         try:
-            # Save candles to DB
             candle_rows = [
                 {
                     "candle_time": str(ts),
@@ -153,88 +172,86 @@ def process_ticker(
                 for ts, row in df.iterrows()
             ]
             save_candles(ticker, tf, candle_rows)
-
-            # Compute S/R levels on 4h
-            cache_key = f"{ticker}_4h"
-            if tf == "4h" and cache_key not in sr_levels_cache:
-                levels = find_swing_levels(df, period=SR_PERIOD)
-                atr = calc_atr(df, period=14)
-                sr_levels_cache[cache_key] = levels
-                atr_cache[cache_key] = atr
-
-                highs_vals = df["High"].values
-                level_types = [
-                    "swing_high" if lvl in highs_vals else "swing_low"
-                    for lvl in levels
-                ]
-                save_sr_levels(scan_id, ticker, tf, levels, level_types)
-
-            # Check breakout
-            prev_candle = df.iloc[-2]
-            last_candle = df.iloc[-1]
-            prev_high = float(prev_candle["High"])
-            prev_low = float(prev_candle["Low"])
-            last_close = float(last_candle["Close"])
-            candle_ts = str(df.index[-1])
-
-            signal_type = None
-            breakout_pct = 0.0
-
-            if last_close > prev_high:
-                breakout_pct = (last_close - prev_high) / prev_high
-                if breakout_pct >= PCT_THRESHOLD:
-                    signal_type = "RIALZISTA"
-            elif last_close < prev_low:
-                breakout_pct = (prev_low - last_close) / prev_low
-                if breakout_pct >= PCT_THRESHOLD:
-                    signal_type = "RIBASSISTA"
-
-            if signal_type is None:
-                continue
-
-            # S/R proximity check
-            sr_key_4h = f"{ticker}_4h"
-            levels = sr_levels_cache.get(sr_key_4h, [])
-            atr = atr_cache.get(sr_key_4h, 0.0)
-            near_sr = False
-            sr_level = None
-            sr_distance = None
-
-            if levels and atr > 0:
-                ref_price = prev_high if signal_type == "RIALZISTA" else prev_low
-                sr_level, sr_distance = nearest_sr(ref_price, levels)
-                near_sr = sr_distance <= SR_TOLERANCE * atr
-
-            signal_data = {
-                "ticker": ticker,
-                "timeframe": tf,
-                "signal_type": signal_type,
-                "close_price": last_close,
-                "prev_high": prev_high,
-                "prev_low": prev_low,
-                "breakout_pct": breakout_pct,
-                "candle_time": candle_ts,
-                "near_sr": near_sr,
-                "sr_level": sr_level,
-                "sr_distance": sr_distance,
-                "atr_value": atr if atr > 0 else None,
-            }
-
-            signal_id = insert_signal(scan_id, signal_data)
-            if signal_id is not None:
-                logger.info(
-                    f"{signal_type} | {ticker} | TF: {tf} | "
-                    f"Close ({last_close:.4f}) | Breakout {breakout_pct*100:.2f}% | "
-                    f"{'Near S/R' if near_sr else 'No S/R'} | "
-                    f"Candela: {candle_ts}"
-                )
-                alerts += 1
-                if near_sr:
-                    filtered += 1
-
         except Exception as e:
-            logger.error(f"Errore per {ticker} ({tf}): {e}")
-            errors += 1
+            logger.error(f"Errore salvataggio candele {ticker} ({tf}): {e}")
+
+    # Compute S/R levels on 4h
+    try:
+        cache_key = f"{ticker}_4h"
+        if df_4h is not None and len(df_4h) >= 2 and cache_key not in sr_levels_cache:
+            levels = find_swing_levels(df_4h, period=SR_PERIOD)
+            atr = calc_atr(df_4h, period=14)
+            sr_levels_cache[cache_key] = levels
+            atr_cache[cache_key] = atr
+
+            highs_vals = df_4h["High"].values
+            level_types = [
+                "swing_high" if lvl in highs_vals else "swing_low"
+                for lvl in levels
+            ]
+            save_sr_levels(scan_id, ticker, "4h", levels, level_types)
+    except Exception as e:
+        logger.error(f"Errore S/R {ticker}: {e}")
+        errors += 1
+
+    # Check breakout on BOTH timeframes
+    type_4h, pct_4h = _check_breakout(candles_map.get("4h"))
+    type_1h, pct_1h = _check_breakout(candles_map.get("1h"))
+
+    # Only save if BOTH confirm same direction
+    if type_4h is None or type_1h is None or type_4h != type_1h:
+        return alerts, filtered, errors
+
+    # Multi-timeframe confirmed signal — use 4h data as primary
+    df_4h_valid = candles_map["4h"]
+    assert df_4h_valid is not None
+    prev_high = float(df_4h_valid.iloc[-2]["High"])
+    prev_low = float(df_4h_valid.iloc[-2]["Low"])
+    last_close = float(df_4h_valid.iloc[-1]["Close"])
+    candle_ts = str(df_4h_valid.index[-1])
+
+    # S/R proximity check
+    sr_key = f"{ticker}_4h"
+    levels = sr_levels_cache.get(sr_key, [])
+    atr = atr_cache.get(sr_key, 0.0)
+    near_sr = False
+    sr_level = None
+    sr_distance = None
+
+    if levels and atr > 0:
+        ref_price = prev_high if type_4h == "RIALZISTA" else prev_low
+        sr_level, sr_distance = nearest_sr(ref_price, levels)
+        near_sr = sr_distance <= SR_TOLERANCE * atr
+
+    try:
+        signal_data = {
+            "ticker": ticker,
+            "timeframe": "4h+1h",
+            "signal_type": type_4h,
+            "close_price": last_close,
+            "prev_high": prev_high,
+            "prev_low": prev_low,
+            "breakout_pct": pct_4h,
+            "candle_time": candle_ts,
+            "near_sr": near_sr,
+            "sr_level": sr_level,
+            "sr_distance": sr_distance,
+            "atr_value": atr if atr > 0 else None,
+        }
+
+        signal_id = insert_signal(scan_id, signal_data)
+        if signal_id is not None:
+            logger.info(
+                f"CONFIRMED {type_4h} | {ticker} | 4h ({pct_4h*100:.2f}%) + 1h ({pct_1h*100:.2f}%) | "
+                f"{'Near S/R' if near_sr else 'No S/R'} | Candela: {candle_ts}"
+            )
+            alerts += 1
+            if near_sr:
+                filtered += 1
+
+    except Exception as e:
+        logger.error(f"Errore segnale {ticker}: {e}")
+        errors += 1
 
     return alerts, filtered, errors
 
