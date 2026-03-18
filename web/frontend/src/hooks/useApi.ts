@@ -144,9 +144,17 @@ export function useTickers(search?: string) {
   return { tickers, refetch: fetchTickers };
 }
 
+export interface ChartSignal {
+  time: number;
+  type: 'RIALZISTA' | 'RIBASSISTA';
+  pct: number;
+  near_sr: boolean;
+}
+
 export interface TickerChartData {
   candles: { time: number; open: number; high: number; low: number; close: number }[];
   sr_levels: { price: number; type: string }[];
+  signals: ChartSignal[];
 }
 
 export function useTickerChart(ticker: string) {

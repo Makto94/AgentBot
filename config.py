@@ -29,7 +29,7 @@ BATCH_DELAY = int(os.environ.get("BATCH_DELAY", "1"))
 # ── S/R Filter ────────────────────────────────────────────────────────
 SR_PERIOD = int(os.environ.get("SR_PERIOD", "7"))
 SR_TOLERANCE = float(os.environ.get("SR_TOLERANCE", "0.25"))
-PCT_THRESHOLD = float(os.environ.get("PCT_THRESHOLD", "0.01"))
+PCT_THRESHOLD = float(os.environ.get("PCT_THRESHOLD", "0.005"))
 
 # ── Logging ───────────────────────────────────────────────────────────
 LOG_FILE = os.environ.get("LOG_FILE", "/tmp/alerts.log")

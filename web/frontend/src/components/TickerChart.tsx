@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { createChart, ColorType, CrosshairMode, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, type IChartApi, type ISeriesApi, type Time, type SeriesMarker } from 'lightweight-charts';
 import type { TickerChartData } from '../hooks/useApi';
 
 interface TickerChartProps {
@@ -130,6 +130,23 @@ export function TickerChart({ ticker, chartData, loading }: TickerChartProps) {
         levelLinesRef.current.push(line);
       });
     }
+  }, [chartData]);
+
+  // Draw signal markers
+  useEffect(() => {
+    if (!candlestickSeriesRef.current || !chartData?.signals?.length) return;
+
+    const markers: SeriesMarker<Time>[] = chartData.signals
+      .map(s => ({
+        time: s.time as Time,
+        position: (s.type === 'RIALZISTA' ? 'belowBar' : 'aboveBar') as 'belowBar' | 'aboveBar',
+        color: s.type === 'RIALZISTA' ? '#6b9e8a' : '#c47a6c',
+        shape: (s.type === 'RIALZISTA' ? 'arrowUp' : 'arrowDown') as 'arrowUp' | 'arrowDown',
+        text: `${(s.pct * 100).toFixed(1)}%`,
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number));
+
+    candlestickSeriesRef.current.setMarkers(markers);
   }, [chartData]);
 
   const supportLevels = chartData?.sr_levels.filter(l => l.type === 'swing_low') ?? [];

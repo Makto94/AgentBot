@@ -236,12 +236,11 @@ async def get_latest_signals(limit: int = 20) -> list[dict]:
 
 
 async def get_ticker_chart(ticker: str, timeframe: str = "4h") -> dict:
-    """Get candle data and S/R levels for a ticker from DB."""
+    """Get candle data, S/R levels, and signals for a ticker from DB."""
     if not pool:
-        return {"candles": [], "sr_levels": []}
+        return {"candles": [], "sr_levels": [], "signals": []}
 
     async with pool.acquire() as conn:
-        # Candles from DB
         candle_rows = await conn.fetch(
             """SELECT candle_time, open, high, low, close
                FROM candles
@@ -250,7 +249,6 @@ async def get_ticker_chart(ticker: str, timeframe: str = "4h") -> dict:
             ticker, timeframe,
         )
 
-        # Latest S/R levels (from most recent scan)
         sr_rows = await conn.fetch(
             """SELECT level_price, level_type
                FROM sr_levels
@@ -260,6 +258,14 @@ async def get_ticker_chart(ticker: str, timeframe: str = "4h") -> dict:
                    WHERE ticker = $1 AND timeframe = $2
                  )
                ORDER BY level_price""",
+            ticker, timeframe,
+        )
+
+        signal_rows = await conn.fetch(
+            """SELECT candle_time, signal_type, breakout_pct, near_sr
+               FROM signals
+               WHERE ticker = $1 AND timeframe = $2
+               ORDER BY candle_time ASC""",
             ticker, timeframe,
         )
 
@@ -274,7 +280,16 @@ async def get_ticker_chart(ticker: str, timeframe: str = "4h") -> dict:
         for r in candle_rows
     ]
     sr_levels = [{"price": float(r["level_price"]), "type": r["level_type"]} for r in sr_rows]
-    return {"candles": candles, "sr_levels": sr_levels}
+    signals = [
+        {
+            "time": int(r["candle_time"].timestamp()),
+            "type": r["signal_type"],
+            "pct": float(r["breakout_pct"]),
+            "near_sr": r["near_sr"],
+        }
+        for r in signal_rows
+    ]
+    return {"candles": candles, "sr_levels": sr_levels, "signals": signals}
 
 
 async def get_ticker_signals(ticker: str) -> list[dict]:
