@@ -13,7 +13,7 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "stock_scanner_db")
 POSTGRES_PORT = int(os.environ.get("POSTGRES_PORT", "5432"))
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "stock_scanner")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "scanner")
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "scanner_password")
+POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 
 # ── Telegram ──────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")

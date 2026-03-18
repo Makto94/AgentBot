@@ -3,8 +3,11 @@
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
+import re
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import CORS_ORIGINS
 from database import (
@@ -33,7 +36,23 @@ app = FastAPI(
     title="Stock Scanner API",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
 )
+
+
+TICKER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,20}$")
+
+
+def validate_ticker(ticker: str) -> str:
+    if not TICKER_RE.match(ticker):
+        raise HTTPException(400, "Invalid ticker format")
+    return ticker.upper()
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: object, exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 app.add_middleware(
     CORSMiddleware,
@@ -104,12 +123,12 @@ async def signals_latest(limit: int = 20):
 
 @app.get("/api/ticker/{ticker}/chart")
 async def ticker_chart(ticker: str):
-    return await get_ticker_chart(ticker)
+    return await get_ticker_chart(validate_ticker(ticker))
 
 
 @app.get("/api/ticker/{ticker}/signals")
 async def ticker_signals(ticker: str):
-    return {"signals": await get_ticker_signals(ticker)}
+    return {"signals": await get_ticker_signals(validate_ticker(ticker))}
 
 
 @app.get("/api/tickers")
