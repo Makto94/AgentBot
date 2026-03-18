@@ -333,32 +333,52 @@ signal.signal(signal.SIGINT, _handle_shutdown)
 signal.signal(signal.SIGTERM, _handle_shutdown)
 
 
+SCAN_MINUTES = [20, 50]  # Scan at :20 and :50 of every hour
+
+
+def _seconds_until_next_scan() -> tuple[int, str]:
+    """Calculate seconds until next scan slot (:20 or :50)."""
+    now = datetime.now()
+    for minute in SCAN_MINUTES:
+        target = now.replace(minute=minute, second=0, microsecond=0)
+        if target > now:
+            return int((target - now).total_seconds()), target.strftime('%H:%M:%S')
+    # Next hour :20
+    target = (now + timedelta(hours=1)).replace(minute=SCAN_MINUTES[0], second=0, microsecond=0)
+    return int((target - now).total_seconds()), target.strftime('%H:%M:%S')
+
+
 def main() -> None:
     logger.info("*" * 60)
     logger.info("Stock Scanner avviato in modalita CONTINUA (h24)")
-    logger.info(f"Intervallo tra scansioni: {SCAN_INTERVAL_MINUTES} minuti")
+    logger.info(f"Scan sincronizzati a :{SCAN_MINUTES[0]:02d} e :{SCAN_MINUTES[1]:02d} di ogni ora")
     logger.info(f"Stock monitorati: {len(STOCKS)}")
-    logger.info(f"Filtro S/R: period={SR_PERIOD}, tolerance={SR_TOLERANCE}xATR, soglia={PCT_THRESHOLD*100:.0f}%")
+    logger.info(f"Filtro S/R: period={SR_PERIOD}, tolerance={SR_TOLERANCE}xATR, soglia={PCT_THRESHOLD*100:.1f}%")
     logger.info("*" * 60)
 
     init_db()
 
+    # First scan immediately
+    try:
+        scan_all()
+    except Exception as e:
+        logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
+
     while _running:
-        try:
-            scan_all()
-        except Exception as e:
-            logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
+        wait_seconds, next_time = _seconds_until_next_scan()
+        logger.info(f"Prossima scansione: {next_time} (tra {wait_seconds}s)")
+
+        while wait_seconds > 0 and _running:
+            time.sleep(min(wait_seconds, 5))
+            wait_seconds -= 5
 
         if not _running:
             break
 
-        next_scan = datetime.now() + timedelta(minutes=SCAN_INTERVAL_MINUTES)
-        logger.info(f"Prossima scansione: {next_scan.strftime('%H:%M:%S')}")
-
-        wait_seconds = SCAN_INTERVAL_MINUTES * 60
-        while wait_seconds > 0 and _running:
-            time.sleep(min(wait_seconds, 5))
-            wait_seconds -= 5
+        try:
+            scan_all()
+        except Exception as e:
+            logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
 
     close_connection()
     logger.info("Stock Scanner arrestato.")
