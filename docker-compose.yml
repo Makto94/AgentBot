@@ -1,6 +1,8 @@
 services:
   db:
-    image: postgres:16-alpine
+    # TimescaleDB extension on Postgres 16 — drop-in replacement for postgres:16
+    # con compressione columnar nativa per hypertable time-series.
+    image: timescale/timescaledb:latest-pg16
     container_name: stock_scanner_db
     restart: always
     environment:
