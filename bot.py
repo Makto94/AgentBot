@@ -32,7 +32,8 @@ from db import (
     save_sr_levels,
 )
 from sr_filter import calc_atr, find_swing_levels, nearest_sr
-from telegram_notifier import send_telegram
+from telegram_notifier import send_telegram, send_telegram_alert
+from yf_cache import cleanup_stale_locks
 
 # ── Logger ──────────────────────────────────────────────────────────────
 
@@ -270,6 +271,7 @@ def scan_all() -> None:
     alerts_count = 0
     filtered_count = 0
     errors_count = 0
+    download_failures = 0
 
     sr_levels_cache: dict[str, list[float]] = {}
     atr_cache: dict[str, float] = {}
@@ -284,11 +286,13 @@ def scan_all() -> None:
         except Exception as e:
             logger.error(f"Errore download batch {batch_num}: {e}")
             errors_count += len(batch)
+            download_failures += len(batch)
             continue
 
         for ticker in batch:
             df_raw = raw_data.get(ticker)
             if df_raw is None or df_raw.empty:
+                download_failures += 1
                 continue
 
             a, f, e = process_ticker(
@@ -313,9 +317,24 @@ def scan_all() -> None:
     logger.info(
         f"Scansione completata | {len(STOCKS)} stock | "
         f"{alerts_count} segnali totali | {filtered_count} near S/R | "
-        f"{errors_count} errori"
+        f"{errors_count} errori | {download_failures} download falliti"
     )
     logger.info("=" * 60)
+
+    # Self-heal: se più della metà dei download è fallita, la causa più
+    # probabile è la cache yfinance corrotta. Pulisco i lock e notifico.
+    if len(STOCKS) and download_failures / len(STOCKS) > 0.5:
+        logger.warning(
+            f"Scansione degenerata: {download_failures}/{len(STOCKS)} download falliti "
+            f"— pulisco cache yfinance, prossimo slot ripartirà pulito"
+        )
+        cleanup_stale_locks()
+        send_telegram_alert(
+            f"\u26a0\ufe0f Stock Scanner: {download_failures}/{len(STOCKS)} download falliti, "
+            f"cache yfinance pulita. Prossima scansione allo slot successivo.",
+            TELEGRAM_BOT_TOKEN,
+            TELEGRAM_CHAT_ID,
+        )
 
 
 # ── Loop principale h24 ────────────────────────────────────────────────
@@ -356,13 +375,25 @@ def main() -> None:
     logger.info(f"Filtro S/R: period={SR_PERIOD}, tolerance={SR_TOLERANCE}xATR, soglia={PCT_THRESHOLD*100:.1f}%")
     logger.info("*" * 60)
 
+    # Pulisco eventuali lock SQLite orfani lasciati da un crash precedente
+    # PRIMA di toccare yfinance (vedi yf_cache.py per il razionale).
+    cleanup_stale_locks()
+
     init_db()
 
+    def _safe_scan() -> None:
+        try:
+            scan_all()
+        except Exception as e:
+            logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
+            send_telegram_alert(
+                f"\U0001f6a8 Stock Scanner: errore critico nella scansione: {e}",
+                TELEGRAM_BOT_TOKEN,
+                TELEGRAM_CHAT_ID,
+            )
+
     # First scan immediately
-    try:
-        scan_all()
-    except Exception as e:
-        logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
+    _safe_scan()
 
     while _running:
         wait_seconds, next_time = _seconds_until_next_scan()
@@ -375,10 +406,7 @@ def main() -> None:
         if not _running:
             break
 
-        try:
-            scan_all()
-        except Exception as e:
-            logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
+        _safe_scan()
 
     close_connection()
     logger.info("Stock Scanner arrestato.")

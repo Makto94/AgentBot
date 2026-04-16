@@ -30,6 +30,14 @@ services:
         condition: service_healthy
     networks:
       - scanner-network
+    # Verifica passiva di vita: il log deve essere stato scritto negli ultimi
+    # 60 minuti. Una scansione silenziosamente bloccata viene marcata unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "test $(find /tmp/alerts.log -mmin -60 2>/dev/null | wc -l) -eq 1"]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 2m
 
   web-backend:
     build: ./web/backend
