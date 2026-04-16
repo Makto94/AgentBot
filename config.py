@@ -19,9 +19,6 @@ POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# ── Scheduling ────────────────────────────────────────────────────────
-SCAN_INTERVAL_MINUTES = int(os.environ.get("SCAN_INTERVAL_MINUTES", "30"))
-
 # ── Rate limiting ─────────────────────────────────────────────────────
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "50"))
 BATCH_DELAY = int(os.environ.get("BATCH_DELAY", "1"))

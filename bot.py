@@ -14,7 +14,6 @@ from config import (
     BATCH_SIZE,
     LOG_FILE,
     PCT_THRESHOLD,
-    SCAN_INTERVAL_MINUTES,
     SR_PERIOD,
     SR_TOLERANCE,
     STOCKS,
@@ -39,6 +38,7 @@ from telegram_notifier import send_telegram
 
 logger = logging.getLogger("BotAlarm")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 
 file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
 file_handler.setFormatter(
