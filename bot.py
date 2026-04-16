@@ -56,6 +56,12 @@ logger.addHandler(console_handler)
 
 # ── Candele ─────────────────────────────────────────────────────────────
 
+# Quante candele salviamo per timeframe ad ogni scansione: le ultime N.
+# Le candele più vecchie sono immutabili, già persistite nei run precedenti.
+# 5 dà margine per recuperare candele eventualmente saltate per scan falliti.
+CANDLES_TO_PERSIST = 5
+
+
 def resample_to_4h(df: pd.DataFrame) -> pd.DataFrame:
     return (
         df.resample("4h")
@@ -157,10 +163,14 @@ def process_ticker(
     }
 
     # Save candles to DB for both timeframes
+    # Salva solo le ultime CANDLES_TO_PERSIST candele per timeframe: la
+    # cronologia precedente è già nel DB e non cambia. yfinance restituisce
+    # ~150 candele 1h per scan, ma solo le ultime 1-2 sono nuove o modificate.
     for tf, df in candles_map.items():
         if df is None or len(df) < 2:
             continue
         try:
+            recent = df.tail(CANDLES_TO_PERSIST)
             candle_rows = [
                 {
                     "candle_time": str(ts),
@@ -170,7 +180,7 @@ def process_ticker(
                     "close": float(row["Close"]),
                     "volume": float(row["Volume"]) if "Volume" in row else None,
                 }
-                for ts, row in df.iterrows()
+                for ts, row in recent.iterrows()
             ]
             save_candles(ticker, tf, candle_rows)
         except Exception as e:
@@ -186,11 +196,8 @@ def process_ticker(
             atr_cache[cache_key] = atr
 
             highs_vals = df_4h["High"].values
-            level_types = [
-                "swing_high" if lvl in highs_vals else "swing_low"
-                for lvl in levels
-            ]
-            save_sr_levels(scan_id, ticker, "4h", levels, level_types)
+            is_high_flags = [lvl in highs_vals for lvl in levels]
+            save_sr_levels(scan_id, ticker, levels, is_high_flags)
     except Exception as e:
         logger.error(f"Errore S/R {ticker}: {e}")
         errors += 1

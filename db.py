@@ -57,19 +57,15 @@ CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_near_sr ON signals(near_sr) WHERE near_sr = TRUE;
 
 CREATE TABLE IF NOT EXISTS sr_levels (
-    id SERIAL PRIMARY KEY,
+    scan_id INT NOT NULL REFERENCES scans(id),
     ticker VARCHAR(20) NOT NULL,
-    timeframe VARCHAR(5) NOT NULL,
     level_price DOUBLE PRECISION NOT NULL,
-    level_type VARCHAR(10) NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(ticker, timeframe, level_price)
+    is_high BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, scan_id, level_price)
 );
 
-CREATE INDEX IF NOT EXISTS idx_sr_levels_ticker ON sr_levels(ticker, timeframe);
-
 CREATE TABLE IF NOT EXISTS candles (
-    id SERIAL PRIMARY KEY,
     ticker VARCHAR(20) NOT NULL,
     timeframe VARCHAR(5) NOT NULL,
     candle_time TIMESTAMPTZ NOT NULL,
@@ -79,48 +75,17 @@ CREATE TABLE IF NOT EXISTS candles (
     close DOUBLE PRECISION NOT NULL,
     volume DOUBLE PRECISION,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(ticker, timeframe, candle_time)
+    PRIMARY KEY (ticker, timeframe, candle_time)
 );
 
 CREATE INDEX IF NOT EXISTS idx_candles_ticker_tf ON candles(ticker, timeframe);
-CREATE INDEX IF NOT EXISTS idx_candles_time ON candles(ticker, timeframe, candle_time DESC);
 """
 
 MIGRATION_SQL = """
--- Migration: add scan_id to sr_levels if missing, drop old unique constraint
-DO $$
-BEGIN
-    -- Add scan_id column if it doesn't exist
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'sr_levels' AND column_name = 'scan_id'
-    ) THEN
-        ALTER TABLE sr_levels ADD COLUMN scan_id INT REFERENCES scans(id);
-        ALTER TABLE sr_levels ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
-        -- Drop old unique constraint
-        ALTER TABLE sr_levels DROP CONSTRAINT IF EXISTS sr_levels_ticker_timeframe_level_price_key;
-    END IF;
-
-    -- Create candles table if not exists (handled by SCHEMA_SQL but just in case)
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_name = 'candles'
-    ) THEN
-        CREATE TABLE candles (
-            id SERIAL PRIMARY KEY,
-            ticker VARCHAR(20) NOT NULL,
-            timeframe VARCHAR(5) NOT NULL,
-            candle_time TIMESTAMPTZ NOT NULL,
-            open DOUBLE PRECISION NOT NULL,
-            high DOUBLE PRECISION NOT NULL,
-            low DOUBLE PRECISION NOT NULL,
-            close DOUBLE PRECISION NOT NULL,
-            volume DOUBLE PRECISION,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            UNIQUE(ticker, timeframe, candle_time)
-        );
-    END IF;
-END $$;
+-- Migrazioni storiche idempotenti gestite a parte (vedi /migrations/*.sql).
+-- Lo SCHEMA_SQL sopra rappresenta lo stato target — CREATE TABLE IF NOT EXISTS
+-- è sufficiente per nuovi deploy; le tabelle esistenti sono già state migrate.
+SELECT 1;
 """
 
 
@@ -155,15 +120,10 @@ def get_cursor() -> Generator[psycopg2.extras.RealDictCursor, None, None]:
 
 
 def init_db() -> None:
-    """Create tables if they don't exist, run migrations."""
+    """Create tables if they don't exist."""
     try:
         with get_cursor() as cur:
             cur.execute(SCHEMA_SQL)
-        with get_cursor() as cur:
-            cur.execute(MIGRATION_SQL)
-        # Create indexes for new columns
-        with get_cursor() as cur:
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sr_levels_scan ON sr_levels(scan_id)")
         logger.info("Database inizializzato")
     except Exception as e:
         logger.error(f"Errore inizializzazione DB: {e}")
@@ -240,24 +200,48 @@ def insert_signal(scan_id: int, signal: dict) -> int | None:
         return row["id"] if row else None
 
 
+def _last_sr_levels(ticker: str) -> set[tuple[float, bool]]:
+    """Restituisce l'insieme (level_price, is_high) dell'ultimo scan per ticker."""
+    with get_cursor() as cur:
+        cur.execute(
+            """SELECT level_price, is_high FROM sr_levels
+               WHERE ticker = %s
+                 AND scan_id = (SELECT MAX(scan_id) FROM sr_levels WHERE ticker = %s)""",
+            (ticker, ticker),
+        )
+        return {(float(r["level_price"]), bool(r["is_high"])) for r in cur.fetchall()}
+
+
 def save_sr_levels(
     scan_id: int,
     ticker: str,
-    timeframe: str,
     levels: list[float],
-    level_types: list[str],
+    is_high_flags: list[bool],
 ) -> None:
-    """Save S/R levels with scan_id for history using batch insert."""
+    """Save S/R levels with scan_id for history using batch insert.
+
+    Solo timeframe 4h (vedi bot.process_ticker). is_high_flags[i] = True per
+    swing_high, False per swing_low.
+
+    Skip dell'INSERT se i livelli sono identici all'ultimo scan dello stesso
+    ticker — sui swing 4h cambiano raramente, evita ~80% di righe duplicate.
+    """
     if not levels:
         return
+
+    new_set = {(float(p), bool(h)) for p, h in zip(levels, is_high_flags)}
+    if new_set == _last_sr_levels(ticker):
+        return
+
     with get_cursor() as cur:
         values = [
-            (scan_id, ticker, timeframe, price, lvl_type)
-            for price, lvl_type in zip(levels, level_types)
+            (scan_id, ticker, price, is_high)
+            for price, is_high in zip(levels, is_high_flags)
         ]
         psycopg2.extras.execute_values(
             cur,
-            "INSERT INTO sr_levels (scan_id, ticker, timeframe, level_price, level_type) VALUES %s",
+            "INSERT INTO sr_levels (scan_id, ticker, level_price, is_high) "
+            "VALUES %s ON CONFLICT (ticker, scan_id, level_price) DO NOTHING",
             values,
             page_size=100,
         )

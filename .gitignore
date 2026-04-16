@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 .env
 alerts.log
+backups/
 web/frontend/node_modules/
 web/frontend/dist/

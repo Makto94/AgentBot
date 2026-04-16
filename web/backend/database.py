@@ -249,16 +249,15 @@ async def get_ticker_chart(ticker: str, timeframe: str = "4h") -> dict:
             ticker, timeframe,
         )
 
+        # sr_levels è solo timeframe '4h' (calcolato in bot.process_ticker)
         sr_rows = await conn.fetch(
-            """SELECT level_price, level_type
+            """SELECT level_price,
+                      CASE WHEN is_high THEN 'swing_high' ELSE 'swing_low' END AS level_type
                FROM sr_levels
-               WHERE ticker = $1 AND timeframe = $2
-                 AND scan_id = (
-                   SELECT MAX(scan_id) FROM sr_levels
-                   WHERE ticker = $1 AND timeframe = $2
-                 )
+               WHERE ticker = $1
+                 AND scan_id = (SELECT MAX(scan_id) FROM sr_levels WHERE ticker = $1)
                ORDER BY level_price""",
-            ticker, timeframe,
+            ticker,
         )
 
         signal_rows = await conn.fetch(
