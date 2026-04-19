@@ -4,7 +4,8 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
@@ -269,6 +270,15 @@ def process_ticker(
 
 def scan_all() -> None:
     """Esegue una scansione completa con download batch."""
+    market_now = _market_now()
+    if _market_is_closed_day(market_now):
+        logger.info("=" * 60)
+        logger.info(
+            f"Mercato chiuso ({market_now.strftime('%A %Y-%m-%d %H:%M:%S %Z')}) - scansione saltata"
+        )
+        logger.info("=" * 60)
+        return
+
     logger.info("=" * 60)
     logger.info(f"Avvio scansione - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"Totale stock: {len(STOCKS)} | Timeframe: {', '.join(TIMEFRAMES)}")
@@ -360,6 +370,92 @@ signal.signal(signal.SIGTERM, _handle_shutdown)
 
 
 SCAN_MINUTES = [20, 50]  # Scan at :20 and :50 of every hour
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _market_now() -> datetime:
+    return datetime.now(MARKET_TZ)
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, occurrence: int) -> datetime:
+    day = datetime(year, month, 1, tzinfo=MARKET_TZ)
+    while day.weekday() != weekday:
+        day += timedelta(days=1)
+    day += timedelta(weeks=occurrence - 1)
+    return day
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> datetime:
+    if month == 12:
+        day = datetime(year + 1, 1, 1, tzinfo=MARKET_TZ) - timedelta(days=1)
+    else:
+        day = datetime(year, month + 1, 1, tzinfo=MARKET_TZ) - timedelta(days=1)
+    while day.weekday() != weekday:
+        day -= timedelta(days=1)
+    return day
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> datetime:
+    holiday = datetime(year, month, day, tzinfo=MARKET_TZ)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _easter_sunday(year: int) -> datetime:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime(year, month, day, tzinfo=MARKET_TZ)
+
+
+def _us_market_holidays(year: int) -> set[date]:
+    holidays = {
+        _observed_fixed_holiday(year, 1, 1).date(),
+        _nth_weekday_of_month(year, 1, 0, 3).date(),   # MLK Day
+        _nth_weekday_of_month(year, 2, 0, 3).date(),   # Presidents' Day
+        (_easter_sunday(year) - timedelta(days=2)).date(),  # Good Friday
+        _last_weekday_of_month(year, 5, 0).date(),     # Memorial Day
+        _observed_fixed_holiday(year, 7, 4).date(),
+        _nth_weekday_of_month(year, 9, 0, 1).date(),   # Labor Day
+        _nth_weekday_of_month(year, 11, 3, 4).date(),  # Thanksgiving
+        _observed_fixed_holiday(year, 12, 25).date(),
+    }
+
+    if year >= 2022:
+        holidays.add(_observed_fixed_holiday(year, 6, 19).date())
+
+    # If next New Year's Day falls on Saturday, NYSE observes it on Dec 31.
+    next_new_year_observed = _observed_fixed_holiday(year + 1, 1, 1).date()
+    if next_new_year_observed.year == year:
+        holidays.add(next_new_year_observed)
+
+    return holidays
+
+
+def _market_is_closed_day(now: datetime | None = None) -> bool:
+    current = now if now is not None else _market_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=MARKET_TZ)
+    else:
+        current = current.astimezone(MARKET_TZ)
+    return (
+        current.weekday() >= 5
+        or current.date() in _us_market_holidays(current.year)
+    )
 
 
 def _seconds_until_next_scan() -> tuple[int, str]:
@@ -379,6 +475,7 @@ def main() -> None:
     logger.info("Stock Scanner avviato in modalita CONTINUA (h24)")
     logger.info(f"Scan sincronizzati a :{SCAN_MINUTES[0]:02d} e :{SCAN_MINUTES[1]:02d} di ogni ora")
     logger.info(f"Stock monitorati: {len(STOCKS)}")
+    logger.info(f"Calendario mercato: weekdays America/New_York ({MARKET_TZ.key})")
     logger.info(f"Filtro S/R: period={SR_PERIOD}, tolerance={SR_TOLERANCE}xATR, soglia={PCT_THRESHOLD*100:.1f}%")
     logger.info("*" * 60)
 
