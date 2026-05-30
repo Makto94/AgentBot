@@ -62,6 +62,10 @@ logger.addHandler(console_handler)
 # 5 dà margine per recuperare candele eventualmente saltate per scan falliti.
 CANDLES_TO_PERSIST = 5
 
+# Batch più piccolo per la passata di retry: riduce il drop-rate per chiamata
+# rispetto al BATCH_SIZE principale.
+RETRY_BATCH_SIZE = 20
+
 
 def resample_to_4h(df: pd.DataFrame) -> pd.DataFrame:
     return (
@@ -293,6 +297,20 @@ def scan_all() -> None:
     sr_levels_cache: dict[str, list[float]] = {}
     atr_cache: dict[str, float] = {}
 
+    # I ticker senza dati alla prima passata vengono raccolti qui e ritentati
+    # una sola volta in batch piccoli (yfinance batch+threads perde ~10% dei
+    # simboli per chiamata in modo transitorio).
+    failed: list[str] = []
+
+    def _process_one(ticker: str, df_raw: pd.DataFrame) -> None:
+        nonlocal alerts_count, filtered_count, errors_count
+        a, f, e = process_ticker(
+            ticker, df_raw, scan_id, sr_levels_cache, atr_cache
+        )
+        alerts_count += a
+        filtered_count += f
+        errors_count += e
+
     # Download in batches
     for batch_start in range(0, len(STOCKS), BATCH_SIZE):
         batch = STOCKS[batch_start : batch_start + BATCH_SIZE]
@@ -302,26 +320,49 @@ def scan_all() -> None:
             raw_data = download_batch(batch)
         except Exception as e:
             logger.error(f"Errore download batch {batch_num}: {e}")
-            errors_count += len(batch)
-            download_failures += len(batch)
+            failed.extend(batch)
             continue
 
         for ticker in batch:
             df_raw = raw_data.get(ticker)
             if df_raw is None or df_raw.empty:
-                download_failures += 1
+                failed.append(ticker)
                 continue
-
-            a, f, e = process_ticker(
-                ticker, df_raw, scan_id, sr_levels_cache, atr_cache
-            )
-            alerts_count += a
-            filtered_count += f
-            errors_count += e
+            _process_one(ticker, df_raw)
 
         done = min(batch_start + BATCH_SIZE, len(STOCKS))
         logger.info(f"  Progresso: {done}/{len(STOCKS)} ...")
         time.sleep(BATCH_DELAY)
+
+    # Retry pass: ritenta i ticker falliti in batch piccoli. Solo chi fallisce
+    # anche qui conta come download fallito reale.
+    if failed:
+        recovered = 0
+        still_failing: list[str] = []
+        for retry_start in range(0, len(failed), RETRY_BATCH_SIZE):
+            retry_batch = failed[retry_start : retry_start + RETRY_BATCH_SIZE]
+            try:
+                retry_data = download_batch(retry_batch)
+            except Exception as e:
+                logger.error(f"Errore retry download: {e}")
+                still_failing.extend(retry_batch)
+                continue
+
+            for ticker in retry_batch:
+                df_raw = retry_data.get(ticker)
+                if df_raw is None or df_raw.empty:
+                    still_failing.append(ticker)
+                    continue
+                _process_one(ticker, df_raw)
+                recovered += 1
+
+            time.sleep(BATCH_DELAY)
+
+        download_failures = len(still_failing)
+        logger.info(
+            f"Retry download: {len(failed)} ticker, recuperati {recovered}, "
+            f"ancora falliti {download_failures}"
+        )
 
     complete_scan(scan_id, alerts_count, filtered_count, errors_count)
 
