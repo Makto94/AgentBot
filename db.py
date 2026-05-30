@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS scans (
     errors INT DEFAULT 0
 );
 
+-- Metriche di osservabilità della scansione (self-applied su DB esistenti).
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS download_failures INT DEFAULT 0;
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS recovered INT DEFAULT 0;
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS duration_seconds INT;
+
 CREATE TABLE IF NOT EXISTS signals (
     id SERIAL PRIMARY KEY,
     scan_id INT REFERENCES scans(id),
@@ -79,6 +84,21 @@ CREATE TABLE IF NOT EXISTS candles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_candles_ticker_tf ON candles(ticker, timeframe);
+
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+    signal_id INT PRIMARY KEY REFERENCES signals(id),
+    ticker VARCHAR(20) NOT NULL,
+    signal_type VARCHAR(15) NOT NULL,
+    entry_price DOUBLE PRECISION NOT NULL,
+    bars_forward INT NOT NULL,
+    forward_return DOUBLE PRECISION,
+    mfe DOUBLE PRECISION,
+    mae DOUBLE PRECISION,
+    outcome VARCHAR(10) NOT NULL,
+    graded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON signal_outcomes(outcome);
 """
 
 MIGRATION_SQL = """
@@ -147,8 +167,10 @@ def complete_scan(
     signals_found: int,
     signals_filtered: int,
     errors: int,
+    download_failures: int = 0,
+    recovered: int = 0,
 ) -> None:
-    """Mark a scan as completed."""
+    """Mark a scan as completed and persist observability metrics."""
     with get_cursor() as cur:
         cur.execute(
             """
@@ -156,10 +178,14 @@ def complete_scan(
             SET ended_at = NOW(),
                 signals_found = %s,
                 signals_filtered = %s,
-                errors = %s
+                errors = %s,
+                download_failures = %s,
+                recovered = %s,
+                duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::int
             WHERE id = %s
             """,
-            (signals_found, signals_filtered, errors, scan_id),
+            (signals_found, signals_filtered, errors,
+             download_failures, recovered, scan_id),
         )
 
 
@@ -293,6 +319,86 @@ def get_new_filtered_signals(scan_id: int) -> list[dict]:
                 (scan_id,),
             )
         return [dict(r) for r in rows]
+
+
+def get_daily_signal_summary(day_start: datetime, day_end: datetime) -> list[dict]:
+    """Tutti i segnali confermati (near-S/R o meno) nell'intervallo dato.
+
+    Usato dal digest giornaliero: a differenza di get_new_filtered_signals NON
+    filtra su near_sr/notified.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT ticker, signal_type, close_price, breakout_pct,
+                   candle_time, near_sr
+            FROM signals
+            WHERE created_at >= %s AND created_at < %s
+            ORDER BY near_sr DESC, breakout_pct DESC
+            """,
+            (day_start, day_end),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_signals_pending_outcome(limit: int = 500) -> list[dict]:
+    """Segnali senza esito definitivo (mai valutati o ancora OPEN)."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.id, s.ticker, s.signal_type, s.close_price, s.candle_time
+            FROM signals s
+            LEFT JOIN signal_outcomes o ON o.signal_id = s.id
+            WHERE (o.signal_id IS NULL OR o.outcome = 'OPEN')
+              AND s.candle_time > NOW() - INTERVAL '20 days'
+            ORDER BY s.candle_time ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_forward_candles(ticker: str, after_time: datetime, limit: int) -> list[dict]:
+    """Candele 4h successive a after_time per un ticker (per il grading forward)."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT candle_time, high, low, close
+            FROM candles
+            WHERE ticker = %s AND timeframe = '4h' AND candle_time > %s
+            ORDER BY candle_time ASC
+            LIMIT %s
+            """,
+            (ticker, after_time, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def upsert_signal_outcome(outcome: dict) -> None:
+    """Inserisce/aggiorna l'esito forward di un segnale."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO signal_outcomes (
+                signal_id, ticker, signal_type, entry_price,
+                bars_forward, forward_return, mfe, mae, outcome, graded_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (signal_id) DO UPDATE SET
+                bars_forward = EXCLUDED.bars_forward,
+                forward_return = EXCLUDED.forward_return,
+                mfe = EXCLUDED.mfe,
+                mae = EXCLUDED.mae,
+                outcome = EXCLUDED.outcome,
+                graded_at = NOW()
+            """,
+            (
+                outcome["signal_id"], outcome["ticker"], outcome["signal_type"],
+                outcome["entry_price"], outcome["bars_forward"],
+                outcome.get("forward_return"), outcome.get("mfe"),
+                outcome.get("mae"), outcome["outcome"],
+            ),
+        )
 
 
 def close_connection() -> None:

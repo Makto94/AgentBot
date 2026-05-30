@@ -5,3 +5,4 @@ alerts.log
 backups/
 web/frontend/node_modules/
 web/frontend/dist/
+backtest_results.csv
