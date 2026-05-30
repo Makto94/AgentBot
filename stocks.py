@@ -1,16 +1,45 @@
 """
 Modulo per il recupero dinamico di tutti i ticker USA e Italia.
-- USA: S&P 500 + NASDAQ-100 (scraping da Wikipedia)
+- USA: S&P 500 + NASDAQ-100 (scraping da Wikipedia) + Russell 2000 (iShares IWM CSV)
 - Italia: FTSE MIB + FTSE Italia Mid Cap + Small Cap (lista completa Borsa Italiana, suffisso .MI)
 """
 
 import logging
+import re
 from io import StringIO
 
 import pandas as pd
 import requests
 
 logger = logging.getLogger("BotAlarm")
+
+# Screener azionario Nasdaq — fonte affidabile e aggiornata dell'intero
+# universo USA (NYSE+NASDAQ+AMEX). Sostituisce la Russell 2000 via iShares:
+# la pagina Wikipedia non elenca i costituenti e l'endpoint CSV holdings di
+# iShares serve ormai solo HTML (protezione anti-bot).
+NASDAQ_SCREENER_URL = (
+    "https://api.nasdaq.com/api/screener/stocks?tableonly=false&download=true"
+)
+
+# Soglia di capitalizzazione minima (USD): include mid/small cap liquidi ed
+# esclude i micro-cap spesso delistati che generano i download falliti.
+US_SCREENER_MIN_MARKET_CAP = 1_000_000_000
+
+# Numero minimo plausibile di ticker: sotto questa soglia trattiamo il fetch
+# come fallito/parziale e restituiamo [] per non corrompere l'universo.
+_US_SCREENER_MIN_TICKERS = 500
+
+# Ticker Yahoo valido dopo la sanitizzazione (. e / -> -).
+_TICKER_RE = re.compile(r"^[A-Z0-9-]{1,6}$")
+
+# Sottostringhe nel campo 'name' che indicano strumenti non-azionari.
+_NON_EQUITY_NAME_TOKENS = (
+    "Warrant", "Unit", "Preferred", "Depositary",
+    "Right", "ETF", "Fund", "Trust", "Notes",
+)
+
+# Simboli/segnaposto non-azionari da scartare.
+_NON_EQUITY_TICKERS = {"", "NAN", "CASH", "USD", "MARGIN", "-"}
 
 _SESSION = requests.Session()
 _SESSION.headers.update({
@@ -115,21 +144,73 @@ ITALY_STOCKS = [
 ]
 
 
-def get_russell2000() -> list[str]:
-    """Scarica la lista Russell 2000 (iShares IWM top holdings) da Wikipedia."""
+def _sanitize_ticker(raw: object) -> str | None:
+    """Normalizza un ticker in formato Yahoo; None se da scartare."""
+    t = str(raw).strip().upper()
+    if t in _NON_EQUITY_TICKERS:
+        return None
+    t = t.replace(".", "-").replace("/", "-")
+    if not _TICKER_RE.match(t):
+        return None
+    return t
+
+
+def _parse_market_cap(raw: object) -> float:
+    """Converte il campo marketCap dello screener in float; 0.0 se non valido."""
     try:
-        html = _fetch_html("https://en.wikipedia.org/wiki/Russell_2000_Index")
-        tables = pd.read_html(StringIO(html))
-        for table in tables:
-            for col in ("Ticker", "Symbol"):
-                if col in table.columns:
-                    tickers = table[col].dropna().str.replace(".", "-", regex=False).tolist()
-                    logger.info(f"Russell 2000: {len(tickers)} ticker caricati")
-                    return tickers
-        logger.warning("Russell 2000: tabella non trovata")
-        return []
+        return float(str(raw).replace(",", "").replace("$", "").strip())
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _is_equity_row(row: dict[str, object]) -> bool:
+    """True se la riga screener è un'azione ordinaria (no warrant/ETF/fund...)."""
+    name = str(row.get("name", ""))
+    return not any(token in name for token in _NON_EQUITY_NAME_TOKENS)
+
+
+def get_us_smallmid_caps() -> list[str]:
+    """Scarica l'universo azionario USA mid/small cap dallo screener Nasdaq.
+
+    Filtra a capitalizzazione >= US_SCREENER_MIN_MARKET_CAP escludendo
+    warrant/unit/ETF/fund. Su qualsiasi errore o risultato implausibilmente
+    piccolo restituisce [] — il chiamante deduplica, quindi l'universo non
+    scende mai sotto S&P 500 + NASDAQ-100.
+    """
+    try:
+        resp = _SESSION.get(
+            NASDAQ_SCREENER_URL,
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        rows = resp.json().get("data", {}).get("rows", [])
+
+        tickers: list[str] = []
+        for row in rows:
+            if not _is_equity_row(row):
+                continue
+            if _parse_market_cap(row.get("marketCap")) < US_SCREENER_MIN_MARKET_CAP:
+                continue
+            ticker = _sanitize_ticker(row.get("symbol", ""))
+            if ticker is not None:
+                tickers.append(ticker)
+
+        tickers = list(dict.fromkeys(tickers))
+
+        if len(tickers) < _US_SCREENER_MIN_TICKERS:
+            logger.warning(
+                f"Screener Nasdaq: solo {len(tickers)} ticker "
+                f"(<{_US_SCREENER_MIN_TICKERS}), fetch parziale/formato cambiato "
+                f"— ignoro, uso solo S&P500+NASDAQ100"
+            )
+            return []
+
+        cap_b = US_SCREENER_MIN_MARKET_CAP / 1e9
+        logger.info(f"Screener Nasdaq (cap>={cap_b:.0f}B): {len(tickers)} ticker caricati")
+        return tickers
     except Exception as e:
-        logger.error(f"Errore fetch Russell 2000: {e}")
+        logger.warning(f"Screener Nasdaq fetch fallito, uso solo S&P500+NASDAQ100: {e}")
         return []
 
 
@@ -186,11 +267,11 @@ EUROPE_STOCKS = [
 
 
 def get_all_us_stocks() -> list[str]:
-    """Restituisce tutti i ticker USA (S&P 500 + NASDAQ-100 + Russell 2000, senza duplicati)."""
+    """Restituisce tutti i ticker USA (S&P 500 + NASDAQ-100 + mid/small cap, senza duplicati)."""
     sp500 = get_sp500()
     nasdaq = get_nasdaq100()
-    russell = get_russell2000()
-    combined = list(dict.fromkeys(sp500 + nasdaq + russell))
+    smallmid = get_us_smallmid_caps()
+    combined = list(dict.fromkeys(sp500 + nasdaq + smallmid))
     logger.info(f"Totale USA (senza duplicati): {len(combined)} ticker")
     return combined
 
