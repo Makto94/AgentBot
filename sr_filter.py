@@ -35,6 +35,32 @@ def calc_atr(df: pd.DataFrame, period: int = 14) -> float:
     return float(np.mean(tr[-period:]))
 
 
+def calc_ema(df: pd.DataFrame, period: int) -> float:
+    """EMA a N periodi sulla colonna Close; ritorna l'ultimo valore (NaN se vuoto)."""
+    if df is None or len(df) == 0:
+        return float("nan")
+    ema = df["Close"].ewm(span=period, adjust=False).mean()
+    return float(ema.iloc[-1])
+
+
+def passes_ema_gate(df: pd.DataFrame, signal_type: str, fast: int, slow: int) -> bool:
+    """True se il trend EMA sul 4h è allineato alla direzione del segnale.
+
+    RIALZISTA: close>EMA_slow e EMA_fast>EMA_slow. RIBASSISTA: specchiato.
+    Se non ci sono abbastanza candele per l'EMA lenta, non filtra (True).
+    """
+    if df is None or len(df) < slow:
+        return True
+    ema_fast = calc_ema(df, fast)
+    ema_slow = calc_ema(df, slow)
+    close = float(df["Close"].iloc[-1])
+    if signal_type == "RIALZISTA":
+        return close > ema_slow and ema_fast > ema_slow
+    if signal_type == "RIBASSISTA":
+        return close < ema_slow and ema_fast < ema_slow
+    return True
+
+
 def nearest_sr(price: float, levels: list[float]) -> tuple[float, float]:
     """Trova il livello S/R piu vicino e la distanza."""
     if not levels:

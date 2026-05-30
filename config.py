@@ -28,5 +28,22 @@ SR_PERIOD = int(os.environ.get("SR_PERIOD", "7"))
 SR_TOLERANCE = float(os.environ.get("SR_TOLERANCE", "0.25"))
 PCT_THRESHOLD = float(os.environ.get("PCT_THRESHOLD", "0.005"))
 
+# ── EMA trend gate (opt-in: di default NON altera i segnali live) ──────
+# Se attivo, un segnale RIALZISTA passa solo con close>EMA_SLOW e EMA_FAST>
+# EMA_SLOW sul 4h (specchiato per il RIBASSISTA). Default disattivato.
+EMA_GATE_ENABLED = os.environ.get("EMA_GATE_ENABLED", "false").lower() == "true"
+EMA_FAST = int(os.environ.get("EMA_FAST", "20"))
+EMA_SLOW = int(os.environ.get("EMA_SLOW", "50"))
+
+# ── Outcome tracking ──────────────────────────────────────────────────
+# Orizzonte (in candele 4h) a cui si valuta l'esito forward di un segnale.
+OUTCOME_HORIZON_BARS = int(os.environ.get("OUTCOME_HORIZON_BARS", "6"))
+
+# ── Digest & heartbeat ────────────────────────────────────────────────
+# Ora locale (Europe/Rome) dopo la quale inviare il digest giornaliero.
+DIGEST_AFTER_HOUR = int(os.environ.get("DIGEST_AFTER_HOUR", "22"))
+# Gap massimo (min) tra due scansioni completate prima di allertare.
+HEARTBEAT_MAX_GAP_MIN = int(os.environ.get("HEARTBEAT_MAX_GAP_MIN", "40"))
+
 # ── Logging ───────────────────────────────────────────────────────────
 LOG_FILE = os.environ.get("LOG_FILE", "/tmp/alerts.log")

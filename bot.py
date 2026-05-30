@@ -13,7 +13,13 @@ import yfinance as yf
 from config import (
     BATCH_DELAY,
     BATCH_SIZE,
+    DIGEST_AFTER_HOUR,
+    EMA_FAST,
+    EMA_GATE_ENABLED,
+    EMA_SLOW,
+    HEARTBEAT_MAX_GAP_MIN,
     LOG_FILE,
+    OUTCOME_HORIZON_BARS,
     PCT_THRESHOLD,
     SR_PERIOD,
     SR_TOLERANCE,
@@ -26,13 +32,18 @@ from db import (
     close_connection,
     complete_scan,
     create_scan,
+    get_daily_signal_summary,
+    get_forward_candles,
     get_new_filtered_signals,
+    get_signals_pending_outcome,
     init_db,
     insert_signal,
     save_candles,
     save_sr_levels,
+    upsert_signal_outcome,
 )
-from sr_filter import calc_atr, find_swing_levels, nearest_sr
+from migrate import run_migrations
+from sr_filter import calc_atr, find_swing_levels, nearest_sr, passes_ema_gate
 from telegram_notifier import send_telegram, send_telegram_alert
 from yf_cache import cleanup_stale_locks
 
@@ -215,6 +226,12 @@ def process_ticker(
     if type_4h is None or type_1h is None or type_4h != type_1h:
         return alerts, filtered, errors
 
+    # Trend gate EMA (opt-in): scarta i segnali contro-trend sul 4h.
+    if EMA_GATE_ENABLED and not passes_ema_gate(
+        candles_map.get("4h"), type_4h, EMA_FAST, EMA_SLOW
+    ):
+        return alerts, filtered, errors
+
     # Multi-timeframe confirmed signal — use 4h data as primary
     df_4h_valid = candles_map["4h"]
     assert df_4h_valid is not None
@@ -269,11 +286,112 @@ def process_ticker(
     return alerts, filtered, errors
 
 
+# ── Heartbeat, digest, outcome grading ──────────────────────────────────
+
+_last_scan_completed_at: datetime | None = None
+_last_digest_date: date | None = None
+
+
+def _check_heartbeat() -> None:
+    """Allerta se è passato troppo tempo dall'ultima scansione completata
+    (slot saltato mentre il mercato era aperto)."""
+    if _last_scan_completed_at is None:
+        return
+    gap_min = (datetime.now() - _last_scan_completed_at).total_seconds() / 60
+    if gap_min > HEARTBEAT_MAX_GAP_MIN:
+        send_telegram_alert(
+            f"⚠️ Stock Scanner: scansione in ritardo, "
+            f"{gap_min:.0f} min dall'ultima (atteso ~30).",
+            TELEGRAM_BOT_TOKEN,
+            TELEGRAM_CHAT_ID,
+        )
+
+
+def _grade_outcomes() -> None:
+    """Valuta l'esito forward dei segnali recenti usando solo le candele 4h
+    già persistite (zero chiamate yfinance aggiuntive)."""
+    pending = get_signals_pending_outcome(limit=500)
+    if not pending:
+        return
+    graded = 0
+    for sig in pending:
+        fwd = get_forward_candles(
+            sig["ticker"], sig["candle_time"], OUTCOME_HORIZON_BARS
+        )
+        if not fwd:
+            continue
+        entry = float(sig["close_price"])
+        if entry <= 0:
+            continue
+        direction = 1.0 if sig["signal_type"] == "RIALZISTA" else -1.0
+        closes = [float(c["close"]) for c in fwd]
+        highs = [float(c["high"]) for c in fwd]
+        lows = [float(c["low"]) for c in fwd]
+        fwd_return = direction * (closes[-1] - entry) / entry
+        if direction > 0:
+            mfe = (max(highs) - entry) / entry
+            mae = (min(lows) - entry) / entry
+        else:
+            mfe = (entry - min(lows)) / entry
+            mae = (entry - max(highs)) / entry
+        if len(fwd) >= OUTCOME_HORIZON_BARS:
+            outcome = "WIN" if fwd_return > 0 else "LOSS"
+        else:
+            outcome = "OPEN"
+        upsert_signal_outcome(
+            {
+                "signal_id": sig["id"],
+                "ticker": sig["ticker"],
+                "signal_type": sig["signal_type"],
+                "entry_price": entry,
+                "bars_forward": len(fwd),
+                "forward_return": fwd_return,
+                "mfe": mfe,
+                "mae": mae,
+                "outcome": outcome,
+            }
+        )
+        graded += 1
+    if graded:
+        logger.info(f"Outcome grading: {graded} segnali valutati")
+
+
+def _maybe_send_digest() -> None:
+    """Una volta al giorno, dopo DIGEST_AFTER_HOUR, invia il riepilogo dei
+    segnali confermati (near-S/R e non)."""
+    global _last_digest_date
+    now = datetime.now()
+    today = now.date()
+    if now.hour < DIGEST_AFTER_HOUR or _last_digest_date == today:
+        return
+
+    day_start = datetime(today.year, today.month, today.day)
+    signals = get_daily_signal_summary(day_start, now)
+    _last_digest_date = today
+    if not signals:
+        return
+
+    near = sum(1 for s in signals if s["near_sr"])
+    lines = [
+        f"\U0001f4ca Digest {today.isoformat()}",
+        f"{len(signals)} segnali confermati ({near} near S/R)",
+    ]
+    for s in signals[:20]:
+        tag = "⭐" if s["near_sr"] else "•"
+        lines.append(
+            f"{tag} {s['ticker']} {s['signal_type']} {s['breakout_pct'] * 100:.1f}%"
+        )
+    if len(signals) > 20:
+        lines.append(f"… e altri {len(signals) - 20}")
+    send_telegram_alert("\n".join(lines), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+
+
 # ── Scansione ───────────────────────────────────────────────────────────
 
 
 def scan_all() -> None:
     """Esegue una scansione completa con download batch."""
+    global _last_scan_completed_at
     market_now = _market_now()
     if _market_is_closed_day(market_now):
         logger.info("=" * 60)
@@ -281,7 +399,12 @@ def scan_all() -> None:
             f"Mercato chiuso ({market_now.strftime('%A %Y-%m-%d %H:%M:%S %Z')}) - scansione saltata"
         )
         logger.info("=" * 60)
+        # Reset: evita un falso allarme heartbeat alla riapertura del mercato.
+        _last_scan_completed_at = None
         return
+
+    # Heartbeat sul gap tra scansioni completate consecutive.
+    _check_heartbeat()
 
     logger.info("=" * 60)
     logger.info(f"Avvio scansione - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -293,6 +416,7 @@ def scan_all() -> None:
     filtered_count = 0
     errors_count = 0
     download_failures = 0
+    recovered = 0
 
     sr_levels_cache: dict[str, list[float]] = {}
     atr_cache: dict[str, float] = {}
@@ -337,7 +461,6 @@ def scan_all() -> None:
     # Retry pass: ritenta i ticker falliti in batch piccoli. Solo chi fallisce
     # anche qui conta come download fallito reale.
     if failed:
-        recovered = 0
         still_failing: list[str] = []
         for retry_start in range(0, len(failed), RETRY_BATCH_SIZE):
             retry_batch = failed[retry_start : retry_start + RETRY_BATCH_SIZE]
@@ -364,7 +487,10 @@ def scan_all() -> None:
             f"ancora falliti {download_failures}"
         )
 
-    complete_scan(scan_id, alerts_count, filtered_count, errors_count)
+    complete_scan(
+        scan_id, alerts_count, filtered_count, errors_count,
+        download_failures=download_failures, recovered=recovered,
+    )
 
     # Send Telegram for filtered signals (near S/R)
     filtered_signals = get_new_filtered_signals(scan_id)
@@ -393,6 +519,19 @@ def scan_all() -> None:
             TELEGRAM_BOT_TOKEN,
             TELEGRAM_CHAT_ID,
         )
+
+    # Post-scan: esiti forward e digest giornaliero (isolati: non devono mai
+    # far fallire la scansione).
+    try:
+        _grade_outcomes()
+    except Exception as e:
+        logger.error(f"Errore grading outcome: {e}")
+    try:
+        _maybe_send_digest()
+    except Exception as e:
+        logger.error(f"Errore digest giornaliero: {e}")
+
+    _last_scan_completed_at = datetime.now()
 
 
 # ── Loop principale h24 ────────────────────────────────────────────────
@@ -524,7 +663,10 @@ def main() -> None:
     # PRIMA di toccare yfinance (vedi yf_cache.py per il razionale).
     cleanup_stale_locks()
 
+    # init_db() crea lo schema target (idempotente); run_migrations() registra
+    # le baseline storiche e applica le migrazioni nuove (004+).
     init_db()
+    run_migrations()
 
     def _safe_scan() -> None:
         try:
