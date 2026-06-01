@@ -9,6 +9,10 @@ logger = logging.getLogger("BotAlarm")
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
+# Limite hard di Telegram per messaggio = 4096 caratteri. Stiamo sotto con
+# margine: oltre questa soglia spezziamo l'elenco segnali in più messaggi.
+TELEGRAM_MAX_LEN = 4000
+
 # Rate-limit di servizio per gli alert: massimo 1 ogni 30 minuti per non
 # spammare il canale se il problema persiste su più scansioni consecutive.
 _ALERT_MIN_INTERVAL_S = 30 * 60
@@ -59,6 +63,33 @@ def send_telegram_alert(message: str, bot_token: str, chat_id: str) -> bool:
     return False
 
 
+def _post_chunked(header: str, lines: list[str], bot_token: str, chat_id: str) -> bool:
+    """Invia header + righe spezzando in più messaggi sotto TELEGRAM_MAX_LEN.
+
+    Il primo messaggio porta l'header; i successivi solo le righe rimanenti.
+    Ritorna True solo se TUTTI i chunk vengono inviati con successo.
+    """
+    chunks: list[str] = []
+    current = header
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > TELEGRAM_MAX_LEN:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    ok = True
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(0.5)  # prudenza anti rate-limit Telegram
+        ok = _post(chunk, bot_token, chat_id) and ok
+    return ok
+
+
 def send_telegram(
     signals: list[dict],
     bot_token: str,
@@ -88,10 +119,8 @@ def send_telegram(
             f"{s['signal_type']} +{pct_str}{sr_str}"
         )
 
-    header = f"\U0001f4ca Stock Scanner - {len(signals)} segnali\n"
-    text = header + "\n".join(lines)
-
-    if _post(text, bot_token, chat_id):
+    header = f"\U0001f4ca Stock Scanner - {len(signals)} segnali"
+    if _post_chunked(header, lines, bot_token, chat_id):
         logger.info(f"Telegram: inviati {len(signals)} segnali")
         return True
     return False
