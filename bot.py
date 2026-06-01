@@ -13,7 +13,6 @@ import yfinance as yf
 from config import (
     BATCH_DELAY,
     BATCH_SIZE,
-    DIGEST_AFTER_HOUR,
     EMA_FAST,
     EMA_GATE_ENABLED,
     EMA_SLOW,
@@ -32,7 +31,6 @@ from db import (
     close_connection,
     complete_scan,
     create_scan,
-    get_daily_signal_summary,
     get_forward_candles,
     get_new_filtered_signals,
     get_signals_pending_outcome,
@@ -286,10 +284,9 @@ def process_ticker(
     return alerts, filtered, errors
 
 
-# ── Heartbeat, digest, outcome grading ──────────────────────────────────
+# ── Heartbeat e outcome grading ─────────────────────────────────────────
 
 _last_scan_completed_at: datetime | None = None
-_last_digest_date: date | None = None
 
 
 def _check_heartbeat() -> None:
@@ -354,36 +351,6 @@ def _grade_outcomes() -> None:
         graded += 1
     if graded:
         logger.info(f"Outcome grading: {graded} segnali valutati")
-
-
-def _maybe_send_digest() -> None:
-    """Una volta al giorno, dopo DIGEST_AFTER_HOUR, invia il riepilogo dei
-    segnali confermati (near-S/R e non)."""
-    global _last_digest_date
-    now = datetime.now()
-    today = now.date()
-    if now.hour < DIGEST_AFTER_HOUR or _last_digest_date == today:
-        return
-
-    day_start = datetime(today.year, today.month, today.day)
-    signals = get_daily_signal_summary(day_start, now)
-    _last_digest_date = today
-    if not signals:
-        return
-
-    near = sum(1 for s in signals if s["near_sr"])
-    lines = [
-        f"\U0001f4ca Digest {today.isoformat()}",
-        f"{len(signals)} segnali confermati ({near} near S/R)",
-    ]
-    for s in signals[:20]:
-        tag = "⭐" if s["near_sr"] else "•"
-        lines.append(
-            f"{tag} {s['ticker']} {s['signal_type']} {s['breakout_pct'] * 100:.1f}%"
-        )
-    if len(signals) > 20:
-        lines.append(f"… e altri {len(signals) - 20}")
-    send_telegram_alert("\n".join(lines), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
 
 # ── Scansione ───────────────────────────────────────────────────────────
@@ -520,16 +487,11 @@ def scan_all() -> None:
             TELEGRAM_CHAT_ID,
         )
 
-    # Post-scan: esiti forward e digest giornaliero (isolati: non devono mai
-    # far fallire la scansione).
+    # Post-scan: esiti forward (isolato: non deve mai far fallire la scansione).
     try:
         _grade_outcomes()
     except Exception as e:
         logger.error(f"Errore grading outcome: {e}")
-    try:
-        _maybe_send_digest()
-    except Exception as e:
-        logger.error(f"Errore digest giornaliero: {e}")
 
     _last_scan_completed_at = datetime.now()
 

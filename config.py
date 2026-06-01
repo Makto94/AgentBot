@@ -39,9 +39,7 @@ EMA_SLOW = int(os.environ.get("EMA_SLOW", "50"))
 # Orizzonte (in candele 4h) a cui si valuta l'esito forward di un segnale.
 OUTCOME_HORIZON_BARS = int(os.environ.get("OUTCOME_HORIZON_BARS", "6"))
 
-# ── Digest & heartbeat ────────────────────────────────────────────────
-# Ora locale (Europe/Rome) dopo la quale inviare il digest giornaliero.
-DIGEST_AFTER_HOUR = int(os.environ.get("DIGEST_AFTER_HOUR", "22"))
+# ── Heartbeat ─────────────────────────────────────────────────────────
 # Gap massimo (min) tra due scansioni completate prima di allertare.
 HEARTBEAT_MAX_GAP_MIN = int(os.environ.get("HEARTBEAT_MAX_GAP_MIN", "40"))
 

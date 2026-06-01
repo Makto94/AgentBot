@@ -321,26 +321,6 @@ def get_new_filtered_signals(scan_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def get_daily_signal_summary(day_start: datetime, day_end: datetime) -> list[dict]:
-    """Tutti i segnali confermati (near-S/R o meno) nell'intervallo dato.
-
-    Usato dal digest giornaliero: a differenza di get_new_filtered_signals NON
-    filtra su near_sr/notified.
-    """
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT ticker, signal_type, close_price, breakout_pct,
-                   candle_time, near_sr
-            FROM signals
-            WHERE created_at >= %s AND created_at < %s
-            ORDER BY near_sr DESC, breakout_pct DESC
-            """,
-            (day_start, day_end),
-        )
-        return [dict(r) for r in cur.fetchall()]
-
-
 def get_signals_pending_outcome(limit: int = 500) -> list[dict]:
     """Segnali senza esito definitivo (mai valutati o ancora OPEN)."""
     with get_cursor() as cur:
