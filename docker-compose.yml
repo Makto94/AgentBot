@@ -24,6 +24,14 @@ services:
     container_name: stock_scanner_bot
     restart: always
     env_file: .env
+    # yfinance apre una connessione SQLite alla cache timezone (tkr-tz.db) per
+    # ticker; con lo scan multi-thread su ~2800 simboli i fd si accumulano e
+    # saturano il default di 1024, rompendo socket Telegram e download Yahoo
+    # ([Errno 24] Too many open files). Alziamo il tetto.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       PYTHONUNBUFFERED: "1"
       TZ: Europe/Rome
