@@ -1,5 +1,14 @@
+# Limita i log json-file di docker: senza tetto un container loquace ruota
+# via la cronologia utile (successo nel busy-loop del bot, 153k righe/48h).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   db:
+    logging: *default-logging
     # TimescaleDB extension on Postgres 16 — drop-in replacement for postgres:16
     # con compressione columnar nativa per hypertable time-series.
     image: timescale/timescaledb:latest-pg16
@@ -20,6 +29,7 @@ services:
       retries: 5
 
   bot:
+    logging: *default-logging
     build: .
     container_name: stock_scanner_bot
     restart: always
@@ -50,6 +60,7 @@ services:
       start_period: 2m
 
   web-backend:
+    logging: *default-logging
     build: ./web/backend
     container_name: stock_scanner_backend
     restart: always
@@ -67,6 +78,7 @@ services:
       start_period: 10s
 
   web-frontend:
+    logging: *default-logging
     build: ./web/frontend
     container_name: stock_scanner_frontend
     restart: always

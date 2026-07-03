@@ -1,9 +1,11 @@
 """Stock Scanner Bot — Outside Candle Breakout with S/R filter, DB, and Telegram."""
 
 import logging
+import math
 import signal
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -36,6 +38,7 @@ from db import (
     get_signals_pending_outcome,
     init_db,
     insert_signal,
+    mark_signals_notified,
     save_candles,
     save_sr_levels,
     upsert_signal_outcome,
@@ -51,7 +54,9 @@ logger = logging.getLogger("BotAlarm")
 logger.setLevel(logging.INFO)
 logger.propagate = False
 
-file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+file_handler = RotatingFileHandler(
+    LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
 file_handler.setFormatter(
     logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 )
@@ -74,6 +79,61 @@ CANDLES_TO_PERSIST = 5
 # Batch più piccolo per la passata di retry: riduce il drop-rate per chiamata
 # rispetto al BATCH_SIZE principale.
 RETRY_BATCH_SIZE = 20
+
+# ── Blacklist ticker morti ──────────────────────────────────────────────
+# Ticker che falliscono il download (prima passata + retry) per N scansioni
+# consecutive vengono esclusi dalle scansioni successive: l'universo contiene
+# simboli delistati/inesistenti su Yahoo che altrimenti costano una passata
+# retry completa ogni 30 minuti, per sempre. Re-probe periodico per
+# riammettere ticker tornati disponibili. Stato in-memory: dopo un riavvio
+# si ricostruisce in DEAD_TICKER_THRESHOLD scansioni.
+DEAD_TICKER_THRESHOLD = 5
+DEAD_TICKER_REPROBE_HOURS = 24
+
+_fail_streak: dict[str, int] = {}
+_dead_tickers: set[str] = set()
+_last_reprobe_at: datetime | None = None
+
+
+def _tickers_to_scan() -> list[str]:
+    """Universo effettivo: STOCKS meno i ticker morti (salvo re-probe)."""
+    global _last_reprobe_at
+    if not _dead_tickers:
+        return list(STOCKS)
+    now = datetime.now()
+    if _last_reprobe_at is None:
+        # Prima esclusione: apri la finestra ora, il re-probe avverrà a scadenza.
+        _last_reprobe_at = now
+    elif now - _last_reprobe_at >= timedelta(hours=DEAD_TICKER_REPROBE_HOURS):
+        _last_reprobe_at = now
+        logger.info(
+            f"Re-probe di {len(_dead_tickers)} ticker esclusi: reinclusi in questa scansione"
+        )
+        return list(STOCKS)
+    return [t for t in STOCKS if t not in _dead_tickers]
+
+
+def _update_fail_streaks(still_failing: list[str], scanned: list[str]) -> None:
+    """Aggiorna i contatori di fallimento consecutivo e la blacklist."""
+    failing_set = set(still_failing)
+    for ticker in scanned:
+        if ticker in failing_set:
+            _fail_streak[ticker] = _fail_streak.get(ticker, 0) + 1
+            if (
+                _fail_streak[ticker] >= DEAD_TICKER_THRESHOLD
+                and ticker not in _dead_tickers
+            ):
+                _dead_tickers.add(ticker)
+        else:
+            if _fail_streak.pop(ticker, 0) and ticker in _dead_tickers:
+                _dead_tickers.discard(ticker)
+                logger.info(f"Ticker {ticker} di nuovo disponibile: riammesso")
+    if _dead_tickers:
+        logger.info(
+            f"Ticker esclusi (>= {DEAD_TICKER_THRESHOLD} scansioni fallite): "
+            f"{len(_dead_tickers)} — {sorted(_dead_tickers)[:20]}"
+            f"{' ...' if len(_dead_tickers) > 20 else ''}"
+        )
 
 
 def resample_to_4h(df: pd.DataFrame) -> pd.DataFrame:
@@ -373,12 +433,17 @@ def scan_all() -> None:
     # Heartbeat sul gap tra scansioni completate consecutive.
     _check_heartbeat()
 
+    tickers = _tickers_to_scan()
     logger.info("=" * 60)
     logger.info(f"Avvio scansione - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Totale stock: {len(STOCKS)} | Timeframe: {', '.join(TIMEFRAMES)}")
+    logger.info(
+        f"Totale stock: {len(tickers)}"
+        + (f" ({len(STOCKS) - len(tickers)} esclusi)" if len(tickers) < len(STOCKS) else "")
+        + f" | Timeframe: {', '.join(TIMEFRAMES)}"
+    )
     logger.info("=" * 60)
 
-    scan_id = create_scan(len(STOCKS))
+    scan_id = create_scan(len(tickers))
     alerts_count = 0
     filtered_count = 0
     errors_count = 0
@@ -403,8 +468,8 @@ def scan_all() -> None:
         errors_count += e
 
     # Download in batches
-    for batch_start in range(0, len(STOCKS), BATCH_SIZE):
-        batch = STOCKS[batch_start : batch_start + BATCH_SIZE]
+    for batch_start in range(0, len(tickers), BATCH_SIZE):
+        batch = tickers[batch_start : batch_start + BATCH_SIZE]
         batch_num = batch_start // BATCH_SIZE + 1
 
         try:
@@ -421,14 +486,14 @@ def scan_all() -> None:
                 continue
             _process_one(ticker, df_raw)
 
-        done = min(batch_start + BATCH_SIZE, len(STOCKS))
-        logger.info(f"  Progresso: {done}/{len(STOCKS)} ...")
+        done = min(batch_start + BATCH_SIZE, len(tickers))
+        logger.info(f"  Progresso: {done}/{len(tickers)} ...")
         time.sleep(BATCH_DELAY)
 
     # Retry pass: ritenta i ticker falliti in batch piccoli. Solo chi fallisce
     # anche qui conta come download fallito reale.
+    still_failing: list[str] = []
     if failed:
-        still_failing: list[str] = []
         for retry_start in range(0, len(failed), RETRY_BATCH_SIZE):
             retry_batch = failed[retry_start : retry_start + RETRY_BATCH_SIZE]
             try:
@@ -454,19 +519,29 @@ def scan_all() -> None:
             f"ancora falliti {download_failures}"
         )
 
+    _update_fail_streaks(still_failing, tickers)
+
     complete_scan(
         scan_id, alerts_count, filtered_count, errors_count,
         download_failures=download_failures, recovered=recovered,
     )
 
-    # Send Telegram for filtered signals (near S/R)
+    # Send Telegram for filtered signals (near S/R). notified viene marcato
+    # solo dopo invio riuscito: se Telegram fallisce, i segnali restano
+    # notified=FALSE e vengono ritentati alla scansione successiva (entro 24h).
     filtered_signals = get_new_filtered_signals(scan_id)
     if filtered_signals:
-        send_telegram(filtered_signals, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+        if send_telegram(filtered_signals, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID):
+            mark_signals_notified([s["id"] for s in filtered_signals])
+        else:
+            logger.error(
+                f"Invio Telegram fallito per {len(filtered_signals)} segnali: "
+                f"restano in coda per il prossimo slot"
+            )
 
     logger.info("-" * 60)
     logger.info(
-        f"Scansione completata | {len(STOCKS)} stock | "
+        f"Scansione completata | {len(tickers)} stock | "
         f"{alerts_count} segnali totali | {filtered_count} near S/R | "
         f"{errors_count} errori | {download_failures} download falliti"
     )
@@ -474,14 +549,14 @@ def scan_all() -> None:
 
     # Self-heal: se più della metà dei download è fallita, la causa più
     # probabile è la cache yfinance corrotta. Pulisco i lock e notifico.
-    if len(STOCKS) and download_failures / len(STOCKS) > 0.5:
+    if len(tickers) and download_failures / len(tickers) > 0.5:
         logger.warning(
-            f"Scansione degenerata: {download_failures}/{len(STOCKS)} download falliti "
+            f"Scansione degenerata: {download_failures}/{len(tickers)} download falliti "
             f"— pulisco cache yfinance, prossimo slot ripartirà pulito"
         )
         cleanup_stale_locks()
         send_telegram_alert(
-            f"\u26a0\ufe0f Stock Scanner: {download_failures}/{len(STOCKS)} download falliti, "
+            f"\u26a0\ufe0f Stock Scanner: {download_failures}/{len(tickers)} download falliti, "
             f"cache yfinance pulita. Prossima scansione allo slot successivo.",
             TELEGRAM_BOT_TOKEN,
             TELEGRAM_CHAT_ID,
@@ -606,10 +681,10 @@ def _seconds_until_next_scan() -> tuple[int, str]:
     for minute in SCAN_MINUTES:
         target = now.replace(minute=minute, second=0, microsecond=0)
         if target > now:
-            return int((target - now).total_seconds()), target.strftime('%H:%M:%S')
+            return math.ceil((target - now).total_seconds()), target.strftime('%H:%M:%S')
     # Next hour :20
     target = (now + timedelta(hours=1)).replace(minute=SCAN_MINUTES[0], second=0, microsecond=0)
-    return int((target - now).total_seconds()), target.strftime('%H:%M:%S')
+    return math.ceil((target - now).total_seconds()), target.strftime('%H:%M:%S')
 
 
 def main() -> None:
@@ -648,6 +723,9 @@ def main() -> None:
         wait_seconds, next_time = _seconds_until_next_scan()
         logger.info(f"Prossima scansione: {next_time} (tra {wait_seconds}s)")
 
+        # max(1, ...) come cintura di sicurezza contro il busy-loop se il
+        # calcolo dovesse mai restituire 0 di nuovo.
+        wait_seconds = max(1, wait_seconds)
         while wait_seconds > 0 and _running:
             time.sleep(min(wait_seconds, 5))
             wait_seconds -= 5

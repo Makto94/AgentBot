@@ -299,26 +299,38 @@ def save_candles(ticker: str, timeframe: str, candle_rows: list[dict]) -> None:
 
 
 def get_new_filtered_signals(scan_id: int) -> list[dict]:
-    """Get signals from this scan that are near S/R and >= 1% breakout."""
+    """Segnali near S/R non ancora notificati.
+
+    Include anche i segnali di scansioni precedenti rimasti notified=FALSE
+    (es. invio Telegram fallito), limitati alle ultime 24h per non
+    riversare backlog vecchio. NON marca notified: chiamare
+    mark_signals_notified() solo dopo l'invio riuscito.
+    """
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT ticker, timeframe, signal_type, close_price,
+            SELECT id, ticker, timeframe, signal_type, close_price,
                    prev_high, prev_low, breakout_pct, candle_time,
                    near_sr, sr_level, sr_distance, atr_value
             FROM signals
-            WHERE scan_id = %s AND near_sr = TRUE AND notified = FALSE
+            WHERE near_sr = TRUE AND notified = FALSE
+              AND (scan_id = %s OR created_at > NOW() - INTERVAL '24 hours')
             ORDER BY breakout_pct DESC
             """,
             (scan_id,),
         )
-        rows = cur.fetchall()
-        if rows:
-            cur.execute(
-                "UPDATE signals SET notified = TRUE WHERE scan_id = %s AND near_sr = TRUE AND notified = FALSE",
-                (scan_id,),
-            )
-        return [dict(r) for r in rows]
+        return [dict(r) for r in cur.fetchall()]
+
+
+def mark_signals_notified(signal_ids: list[int]) -> None:
+    """Marca i segnali come notificati (da chiamare dopo invio riuscito)."""
+    if not signal_ids:
+        return
+    with get_cursor() as cur:
+        cur.execute(
+            "UPDATE signals SET notified = TRUE WHERE id = ANY(%s)",
+            (signal_ids,),
+        )
 
 
 def get_signals_pending_outcome(limit: int = 500) -> list[dict]:
