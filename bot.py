@@ -420,20 +420,34 @@ def scan_all() -> None:
     """Esegue una scansione completa con download batch."""
     global _last_scan_completed_at
     market_now = _market_now()
-    if _market_is_closed_day(market_now):
+    if market_now.weekday() >= 5:
         logger.info("=" * 60)
         logger.info(
-            f"Mercato chiuso ({market_now.strftime('%A %Y-%m-%d %H:%M:%S %Z')}) - scansione saltata"
+            f"Weekend ({market_now.strftime('%A %Y-%m-%d %H:%M:%S %Z')}) - scansione saltata"
         )
         logger.info("=" * 60)
         # Reset: evita un falso allarme heartbeat alla riapertura del mercato.
         _last_scan_completed_at = None
         return
 
+    us_holiday = _market_is_closed_day(market_now)
+
     # Heartbeat sul gap tra scansioni completate consecutive.
     _check_heartbeat()
 
     tickers = _tickers_to_scan()
+    if us_holiday:
+        # Festività solo USA: le borse europee (ticker con suffisso di
+        # listino, es. .MI/.PA/.DE) sono aperte — scansioniamo solo quelle.
+        # I ticker USA sono normalizzati senza punto (BRK.B → BRK-B).
+        tickers = [t for t in tickers if "." in t]
+        logger.info(
+            f"Festività USA ({market_now.strftime('%A %Y-%m-%d')}): "
+            f"scansione limitata a {len(tickers)} titoli EU/IT"
+        )
+        if not tickers:
+            _last_scan_completed_at = None
+            return
     logger.info("=" * 60)
     logger.info(f"Avvio scansione - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(
