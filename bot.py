@@ -152,6 +152,45 @@ def resample_to_4h(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+# Colonne OHLC richieste da tutto il resto della pipeline. Se anche una
+# sola manca, il DataFrame è inutilizzabile e va scartato (non deve far
+# crashare l'intera scansione con KeyError su "High"/"Open"/...).
+_REQUIRED_COLS = ("Open", "High", "Low", "Close")
+
+
+def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Riduce le colonne a un singolo livello OHLC pulito e valida la presenza
+    delle colonne richieste. Ritorna None se il DataFrame non è utilizzabile.
+
+    yfinance a volte restituisce colonne MultiIndex non appiattite o colonne
+    duplicate: in quei casi ``df["High"]`` lancia KeyError. Qui appiattiamo,
+    deduplichiamo e verifichiamo, restituendo una copia pulita.
+    """
+    if df is None or df.empty:
+        return None
+
+    # Appiattisci eventuali colonne MultiIndex tenendo il livello che contiene
+    # i nomi OHLC (di norma il livello 0; fallback sul primo non vuoto).
+    if isinstance(df.columns, pd.MultiIndex):
+        flattened = None
+        for lvl in range(df.columns.nlevels):
+            names = df.columns.get_level_values(lvl)
+            if any(n in _REQUIRED_COLS for n in names):
+                flattened = names
+                break
+        df = df.copy()
+        df.columns = flattened if flattened is not None else df.columns.get_level_values(0)
+
+    # Rimuovi colonne duplicate tenendo la prima occorrenza.
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+
+    if not all(col in df.columns for col in _REQUIRED_COLS):
+        return None
+
+    return df
+
+
 def download_batch(tickers: list[str]) -> dict[str, pd.DataFrame]:
     """Download 1h data for a batch of tickers in one yfinance call."""
     data = yf.download(
@@ -170,19 +209,23 @@ def download_batch(tickers: list[str]) -> dict[str, pd.DataFrame]:
 
     if len(tickers) == 1:
         # Single ticker — no MultiIndex on columns
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.droplevel(1)
-        if not data.empty:
-            result[tickers[0]] = data.dropna(how="all")
+        df = _normalize_ohlc(data)
+        if df is not None:
+            df = df.dropna(how="all")
+            if not df.empty:
+                result[tickers[0]] = df
     else:
         # Multiple tickers — MultiIndex columns grouped by ticker
         for ticker in tickers:
             try:
-                df = data[ticker].dropna(how="all")
-                if not df.empty:
-                    result[ticker] = df
+                df = _normalize_ohlc(data[ticker])
             except (KeyError, TypeError):
-                pass
+                continue
+            if df is None:
+                continue
+            df = df.dropna(how="all")
+            if not df.empty:
+                result[ticker] = df
 
     return result
 
@@ -190,6 +233,9 @@ def download_batch(tickers: list[str]) -> dict[str, pd.DataFrame]:
 def _check_breakout(df: pd.DataFrame) -> tuple[str | None, float]:
     """Check last candle for breakout. Returns (signal_type, breakout_pct)."""
     if df is None or len(df) < 2:
+        return None, 0.0
+
+    if not all(col in df.columns for col in ("High", "Low", "Close")):
         return None, 0.0
 
     prev_high = float(df.iloc[-2]["High"])
