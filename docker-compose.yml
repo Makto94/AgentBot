@@ -42,6 +42,12 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    # Il bot ha un leak lento (caches yfinance/pandas): da ~300MB post-start
+    # cresce fino a 1.8GB+ in settimane. Working set reale dello scan ~950MB.
+    # Tetto a 1.5GB con swap disabilitata (memswap == mem): allo sforo Docker
+    # lo OOM-killa e restart:always lo rialza pulito — self-heal del leak.
+    mem_limit: 1536m
+    memswap_limit: 1536m
     environment:
       PYTHONUNBUFFERED: "1"
       TZ: Europe/Rome
