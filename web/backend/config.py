@@ -11,4 +11,4 @@ DATABASE_URL = (
     f"/{os.environ.get('POSTGRES_DB', 'stock_scanner')}"
 )
 
-CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "https://stock-scanner.tomd.space").split(",")
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "https://stock-scanner.tomdapp.uk").split(",")
