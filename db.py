@@ -162,6 +162,27 @@ def create_scan(total_stocks: int) -> int:
         return row["id"]
 
 
+def close_incomplete_scans() -> list[int]:
+    """Close scan rows abandoned by a process or infrastructure failure.
+
+    A scan is single-instance, so any row still open before the next attempt
+    is an abandoned run rather than concurrent work.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE scans
+            SET ended_at = NOW(),
+                errors = GREATEST(COALESCE(errors, 0), 1),
+                duration_seconds =
+                    EXTRACT(EPOCH FROM (NOW() - started_at))::int
+            WHERE ended_at IS NULL
+            RETURNING id
+            """
+        )
+        return [row["id"] for row in cur.fetchall()]
+
+
 def complete_scan(
     scan_id: int,
     signals_found: int,

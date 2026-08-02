@@ -30,6 +30,7 @@ from config import (
     TIMEFRAMES,
 )
 from db import (
+    close_incomplete_scans,
     close_connection,
     complete_scan,
     create_scan,
@@ -767,9 +768,24 @@ def main() -> None:
 
     def _safe_scan() -> None:
         try:
+            abandoned = close_incomplete_scans()
+            if abandoned:
+                logger.warning(
+                    f"Scansioni incomplete chiuse come fallite: {abandoned}"
+                )
             scan_all()
         except Exception as e:
             logger.error(f"Errore critico nella scansione: {e}", exc_info=True)
+            try:
+                abandoned = close_incomplete_scans()
+                if abandoned:
+                    logger.warning(
+                        f"Scansioni incomplete chiuse come fallite: {abandoned}"
+                    )
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Impossibile chiudere la scansione incompleta: {cleanup_error}"
+                )
             send_telegram_alert(
                 f"\U0001f6a8 Stock Scanner: errore critico nella scansione: {e}",
                 TELEGRAM_BOT_TOKEN,
