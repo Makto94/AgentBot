@@ -146,7 +146,7 @@ def resample_to_4h(df: pd.DataFrame) -> pd.DataFrame:
                 "High": "max",
                 "Low": "min",
                 "Close": "last",
-                "Volume": "sum",
+                **({"Volume": "sum"} if "Volume" in df.columns else {}),
             }
         )
         .dropna()
@@ -270,7 +270,9 @@ def process_ticker(
     # Derive both timeframes from single download
     try:
         df_4h = resample_to_4h(df_raw)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Errore aggregazione 4h {ticker}: {e}")
+        errors += 1
         df_4h = pd.DataFrame()
 
     cutoff_1h = datetime.now() - timedelta(days=5)
@@ -306,6 +308,7 @@ def process_ticker(
             save_candles(ticker, tf, candle_rows)
         except Exception as e:
             logger.error(f"Errore salvataggio candele {ticker} ({tf}): {e}")
+            errors += 1
 
     # Compute S/R levels on 4h
     try:
@@ -579,6 +582,11 @@ def scan_all() -> None:
             f"Retry download: {len(failed)} ticker, recuperati {recovered}, "
             f"ancora falliti {download_failures}"
         )
+        if still_failing:
+            logger.warning(
+                "Download senza dati utilizzabili dopo retry (%d): %s",
+                download_failures, ", ".join(still_failing),
+            )
 
     _update_fail_streaks(still_failing, tickers)
 

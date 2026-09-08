@@ -1,0 +1,28 @@
+{
+  "repository": "AgentBot",
+  "filone": "audit",
+  "base_commit": "0220574d4712e7dc4f7aa95bd178e32c10ac951c",
+  "origine_server": "/root/AgentBot",
+  "file_copiati": [
+    {
+      "file": ".dockerignore",
+      "sha256": "f5c2d9747b98f3bbbaedadc5d17e15a4a603962349712a4b5829553d26a88706",
+      "mode": "0o644"
+    },
+    {
+      "file": "bot.py",
+      "sha256": "d61fe114c415960a2b4322acbfe7a317591e08a792508026a98961f8d7058d6b",
+      "mode": "0o644"
+    },
+    {
+      "file": "tests/test_download_diagnostics.py",
+      "sha256": "15bb04ab34be5f5df42fd039eb1134b02cad6dd82bcd1dcfa27f320d5ecc16eb",
+      "mode": "0o600"
+    }
+  ],
+  "esclusi": [
+    ".codex"
+  ],
+  "nota": "Snapshot di recupero, non implementazione approvata né rilascio. I file esclusi restano nella sorgente originale; i percorsi server sono riferimenti storici.",
+  "altra_origine_identica": "/root/audit-worktrees/host-20260908/agentbot"
+}

@@ -3,6 +3,8 @@
 .git
 __pycache__
 *.pyc
+.venv/
+backups/
 web/
 docker-compose.yml
 alerts.log

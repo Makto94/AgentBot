@@ -1,0 +1,12 @@
+MemAvailable=6039004 KiB; memory PSI some avg10=0.01
+Traceback (most recent call last):
+  File "<string>", line 2, in <module>
+  File "/root/AgentBot/tests/test_download_diagnostics.py", line 8, in <module>
+    import bot
+  File "/root/AgentBot/bot.py", line 32, in <module>
+    from db import (
+  File "/root/AgentBot/db.py", line 8, in <module>
+    import psycopg2
+ModuleNotFoundError: No module named 'psycopg2'
+MemAvailable=5574288 KiB; memory PSI some avg10=0.14
+PASS: full final-failure list beyond 20 symbols; recovered symbols excluded; counters and processing preserved; no warning when all recover

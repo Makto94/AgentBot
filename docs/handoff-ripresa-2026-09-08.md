@@ -4,6 +4,10 @@ Recuperare diagnostica download, review della persistenza/Volume e limiti RAM/sw
 
 Documento canonico sul ramo `main`. Distingue codice salvato, proposte e verifiche mancanti; non certifica un rilascio applicativo. I documenti storici sono conservati e gli eventuali loro stati precedenti vanno letti insieme agli aggiornamenti qui sotto.
 
+## Aggiornamento autorizzato dopo il recupero
+
+L’operatore ha autorizzato completamento dei residui piccoli, merge e deploy dopo i controlli. Corretti conteggio errori save_candles, aggregazione OHLC senza Volume e diagnosi degli altri errori di resampling. Prove offline passate, inclusi due salvataggi falliti, stesso segnale con/senza Volume, errore aggregazione e diagnostica retry. Configurazione e container corrente coincidono: 1536 MiB RAM e memoria+swap uguale alla RAM, quindi swap disabilitato. Build/rilascio in preparazione; la causa dei download storici non viene inventata.
+
 ## Autorizzazioni e perimetro
 
 La richiesta corrente autorizza la pubblicazione di questo handoff e dei branch di recupero, con push normale e senza rilasci automatici. Non autorizza a completare adesso le correzioni applicative, fondere codice incompleto nel ramo principale, avviare sessioni ferme, cancellare/archiviare chat, modificare dati storici, acquistare servizi o intervenire in produzione. Gli interventi operativi menzionati sotto appartengono alle sessioni originarie, non sono stati ripetuti.
