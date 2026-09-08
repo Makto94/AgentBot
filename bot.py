@@ -579,6 +579,11 @@ def scan_all() -> None:
             f"Retry download: {len(failed)} ticker, recuperati {recovered}, "
             f"ancora falliti {download_failures}"
         )
+        if still_failing:
+            logger.warning(
+                "Download senza dati utilizzabili dopo retry (%d): %s",
+                download_failures, ", ".join(still_failing),
+            )
 
     _update_fail_streaks(still_failing, tickers)
 

@@ -1,0 +1,32 @@
+[
+  {
+    "origine_server": "/root/reports/system-efficiency-20260908/agentbot-downloads-review.md",
+    "file": "audit/agentbot-downloads-review.md",
+    "sha256_originale": "9bf2b8527300475a9f1292276be29eaeff1db01095f1468177e511c2bd76c0d8",
+    "sha256_pubblicabile": "9bf2b8527300475a9f1292276be29eaeff1db01095f1468177e511c2bd76c0d8"
+  },
+  {
+    "origine_server": "/root/reports/system-efficiency-20260908/agentbot-download-check.log",
+    "file": "audit/agentbot-download-check.log",
+    "sha256_originale": "12e713fb3e9e0dacd0df91986088e6fc45a32a0ec9eb7b1754c6f070c82643ab",
+    "sha256_pubblicabile": "12e713fb3e9e0dacd0df91986088e6fc45a32a0ec9eb7b1754c6f070c82643ab"
+  },
+  {
+    "origine_server": "/root/reports/system-efficiency-20260908/agentbot-download-check-runner.py",
+    "file": "audit/agentbot-download-check-runner.py",
+    "sha256_originale": "ea34b62075319dd4488c35ad458b22277285e5ee65df8faf0154b54e2a8ed6dd",
+    "sha256_pubblicabile": "ea34b62075319dd4488c35ad458b22277285e5ee65df8faf0154b54e2a8ed6dd"
+  },
+  {
+    "origine_server": "/tmp/codex-recovery-20260908/accelerazione/host/AGENTBOT.md",
+    "file": "controverifica/AGENTBOT.md",
+    "sha256_originale": "f0cce18532d5463a1208fe5b4eff02092ccb1f88ad62597f14ef9440df16cd5d",
+    "sha256_pubblicabile": "f0cce18532d5463a1208fe5b4eff02092ccb1f88ad62597f14ef9440df16cd5d"
+  },
+  {
+    "origine_server": "/tmp/codex-recovery-20260908/accelerazione/host/agentbot-repro.py",
+    "file": "controverifica/agentbot-repro.py",
+    "sha256_originale": "f79347c1c8c1092f8cff6d4c0a98af593f846d69857afa9a201316778c73d6f7",
+    "sha256_pubblicabile": "f79347c1c8c1092f8cff6d4c0a98af593f846d69857afa9a201316778c73d6f7"
+  }
+]
